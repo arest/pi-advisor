@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0/).
 
+## 0.11.1 - 2026-10-04
+
+### Changed
+
+- Updated CI and local validation to Bun 1.4.2.
+- Updated the Pi development toolchain to the 1.0.2 packages (`pi-ai`, `pi-coding-agent`, `pi-tui`); the supported peer range stays `^1.0.0`.
+
 ## 0.11.0 - 2026-10-03
 
 ### Added
