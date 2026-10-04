@@ -1,14 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
+
 import {
   collectTextStream,
   createCoalescedUpdate,
   resolveConfiguredModel,
 } from "../src/model-stream.ts";
-import type {
-  CoalescedUpdateScheduler,
-  CollectTextStreamOptions,
-} from "../src/model-stream.ts";
+import type { CoalescedUpdateScheduler } from "../src/model-stream.ts";
 import { asExtensionContext } from "./helpers/extension-context.ts";
 
 // SAFETY: fixture mirrors the catalogue fields stream() reads; "test-api" is a synthetic Api label.
@@ -41,6 +41,15 @@ interface AssistantMessageFixture {
   usage: StreamUsageFixture;
 }
 
+interface FakeStreamOptions {
+  apiKey?: string;
+  env?: Record<string, string>;
+  headers?: Record<string, string | null>;
+  reasoning?: string;
+  reasoningEffort?: string;
+  signal?: AbortSignal;
+}
+
 const DEFAULT_STREAM_USAGE: StreamUsageFixture = { input: 1 };
 
 const assistant = (
@@ -69,9 +78,9 @@ const assistant = (
 const fakeStream = (
   events: any[],
   result: any,
-  capture?: (options: CollectTextStreamOptions) => void
+  capture?: (options: FakeStreamOptions) => void
 ) =>
-  ((_model: any, _context: any, options: CollectTextStreamOptions) => {
+  ((_model: any, _context: any, options: FakeStreamOptions) => {
     capture?.(options);
     return {
       async *[Symbol.asyncIterator]() {
@@ -274,7 +283,7 @@ describe("model stream", () => {
   });
 
   test("omits provider effort when it is not configured", async () => {
-    let optionsSeen: CollectTextStreamOptions | undefined;
+    let optionsSeen: FakeStreamOptions | undefined;
     await collectTextStream(
       { apiKey: "key", model, ref: "provider/model" },
       { messages: [], systemPrompt: "system" },
@@ -333,5 +342,157 @@ describe("model stream", () => {
       fakeStream([], assistant(""))
     );
     expect(empty.text).toBe("");
+  });
+
+  test("uses a registered provider wrapper and leaves auth to ModelRegistry", async () => {
+    const runtime = await ModelRuntime.create({
+      credentials: new InMemoryCredentialStore(),
+      modelsPath: null,
+      refreshOnCreate: false,
+    });
+    const registry = new ModelRegistry(runtime);
+    const getApiKeyAndHeaders = registry.getApiKeyAndHeaders.bind(registry);
+    let authPreflightCalls = 0;
+    registry.getApiKeyAndHeaders = async (value) => {
+      authPreflightCalls += 1;
+      return getApiKeyAndHeaders(value);
+    };
+    let streamSimpleCalls = 0;
+    let resolvedApiKey: string | undefined;
+    let wrappedApiKey: string | undefined;
+    let resolvedReasoning: string | undefined;
+    let receivedSignal: AbortSignal | undefined;
+    const controller = new AbortController();
+    registry.registerProvider("provider", {
+      api: "test-api",
+      apiKey: "PLAIN-KEY",
+      models: [model],
+      streamSimple: (providerModel, context, streamOptions) => {
+        streamSimpleCalls += 1;
+        resolvedApiKey = streamOptions?.apiKey;
+        resolvedReasoning = streamOptions?.reasoning;
+        receivedSignal = streamOptions?.signal;
+        const wrappedOptions = {
+          ...streamOptions,
+          apiKey: "WRAPPED-SENTINEL-KEY",
+        };
+        wrappedApiKey = wrappedOptions.apiKey;
+        return fakeStream(
+          [{ delta: "advice", type: "text_delta" }],
+          assistant("advice from composed provider")
+        )(providerModel, context, wrappedOptions);
+      },
+    });
+    const ctx = asExtensionContext({ modelRegistry: registry });
+    const resolved = await resolveConfiguredModel(
+      ctx,
+      "provider/model",
+      "Advisor"
+    );
+    expect(authPreflightCalls).toBe(0);
+    expect(resolved.apiKey).toBeUndefined();
+
+    const result = await collectTextStream(resolved, {
+      messages: [
+        { content: [{ text: "hi", type: "text" }], role: "user", timestamp: 1 },
+      ],
+      reasoning: "low",
+      signal: controller.signal,
+      systemPrompt: "sys",
+    });
+
+    expect(authPreflightCalls).toBe(0);
+    expect(streamSimpleCalls).toBe(1);
+    expect(resolvedApiKey).toBe("PLAIN-KEY");
+    expect(wrappedApiKey).toBe("WRAPPED-SENTINEL-KEY");
+    expect(resolvedReasoning).toBe("low");
+    expect(receivedSignal).toBe(controller.signal);
+    expect(result.text).toBe("advice from composed provider");
+
+    const offResult = await collectTextStream(resolved, {
+      messages: [],
+      reasoning: "off",
+      systemPrompt: "sys",
+    });
+    expect(resolvedReasoning).toBeUndefined();
+    expect(offResult.text).toBe("advice from composed provider");
+    await expect(
+      collectTextStream(resolved, {
+        messages: [],
+        reasoning: "unsupported",
+        systemPrompt: "sys",
+      })
+    ).rejects.toThrow("Unsupported Advisor reasoning level: unsupported");
+  });
+
+  test("surfaces registry auth errors without calling the provider wrapper", async () => {
+    const previousEnvValue = process.env.PI_ADVISOR_TEST_MISSING_STREAM_KEY;
+    delete process.env.PI_ADVISOR_TEST_MISSING_STREAM_KEY;
+    try {
+      const runtime = await ModelRuntime.create({
+        credentials: new InMemoryCredentialStore(),
+        modelsPath: null,
+        refreshOnCreate: false,
+      });
+      const registry = new ModelRegistry(runtime);
+      let streamSimpleCalled = false;
+      registry.registerProvider("provider", {
+        api: "test-api",
+        apiKey: "$PI_ADVISOR_TEST_MISSING_STREAM_KEY",
+        models: [model],
+        streamSimple: () => {
+          streamSimpleCalled = true;
+          return fakeStream([], assistant("unexpected provider call"))();
+        },
+      });
+      const resolved = await resolveConfiguredModel(
+        asExtensionContext({ modelRegistry: registry }),
+        "provider/model",
+        "Advisor"
+      );
+      await expect(
+        collectTextStream(resolved, {
+          messages: [],
+          systemPrompt: "sys",
+        })
+      ).rejects.toThrow("Failed to resolve API key for provider");
+      expect(streamSimpleCalled).toBe(false);
+    } finally {
+      if (previousEnvValue === undefined) {
+        delete process.env.PI_ADVISOR_TEST_MISSING_STREAM_KEY;
+      } else {
+        process.env.PI_ADVISOR_TEST_MISSING_STREAM_KEY = previousEnvValue;
+      }
+    }
+  });
+
+  test("uses compat streaming only when the registry has no streamSimple", async () => {
+    let capturedOptions: any;
+    const ctx = asExtensionContext({
+      modelRegistry: {
+        find: () => model,
+        getApiKeyAndHeaders: () =>
+          Promise.resolve({ apiKey: "legacy-key", ok: true }),
+        streamSimple: undefined,
+      },
+    });
+    const resolved = await resolveConfiguredModel(
+      ctx,
+      "provider/model",
+      "Advisor"
+    );
+    const result = await collectTextStream(
+      resolved,
+      { messages: [], reasoning: "medium", systemPrompt: "system" },
+      fakeStream([], assistant("legacy stream"), (options) => {
+        capturedOptions = options;
+      })
+    );
+    expect(capturedOptions).toMatchObject({
+      apiKey: "legacy-key",
+      reasoning: "medium",
+      reasoningEffort: "medium",
+    });
+    expect(result.text).toBe("legacy stream");
   });
 });

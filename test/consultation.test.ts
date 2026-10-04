@@ -3,10 +3,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import {
   fauxAssistantMessage,
   registerFauxProvider,
 } from "@earendil-works/pi-ai/compat";
+import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
 
 import registerExtension, {
@@ -19,8 +21,14 @@ import {
   setAdvisorToolPoliciesRef,
 } from "../src/config.ts";
 import { setAdvisorScoutTimeoutMsRef } from "../src/config/state.ts";
+import { loadConfig } from "../src/config/storage.ts";
 import { DEFAULT_SCOUT_TIMEOUT_MS } from "../src/config/types.ts";
+import { HerdrAdvisorBlock } from "../src/herdr-block.ts";
+import { herdrAdvisorActivity } from "../src/herdr.ts";
+import { AdvisorSessionState } from "../src/session-state.ts";
 import { advisorRequestConversation } from "../src/tools.ts";
+import { handleAutomaticGate } from "../src/tools/loop-gate.ts";
+import { ScoutStatusManager } from "../src/tools/scout-status.ts";
 import { withAgentDir } from "./helpers/config-fixture.ts";
 import { asExtensionContext } from "./helpers/extension-context.ts";
 import { mockPi } from "./helpers/mock-pi.ts";
@@ -207,6 +215,135 @@ describe("Advisor consultation request construction", () => {
       );
     } finally {
       faux.unregister();
+    }
+  });
+
+  test("blocks repeated tool calls when registry auth fails in the gate", async () => {
+    const previousEnvValue = process.env.PI_ADVISOR_TEST_MISSING_GATE_KEY;
+    delete process.env.PI_ADVISOR_TEST_MISSING_GATE_KEY;
+    const notifications: string[] = [];
+    const blockedEvents: boolean[] = [];
+    try {
+      await withAgentDir(
+        {
+          advisor: "provider/advisor",
+          advisorAutoLoopGate: true,
+          advisorGitContext: "off",
+          advisorLoopThreshold: 2,
+          advisorScoutEnabled: false,
+          gateFailureMode: "block-session",
+        },
+        async (agentDir) => {
+          const runtime = await ModelRuntime.create({
+            credentials: new InMemoryCredentialStore(),
+            modelsPath: null,
+            refreshOnCreate: false,
+          });
+          const registry = new ModelRegistry(runtime);
+          let providerCalled = false;
+          registry.registerProvider("provider", {
+            api: "test-api",
+            apiKey: "$PI_ADVISOR_TEST_MISSING_GATE_KEY",
+            models: [
+              {
+                api: "test-api",
+                baseUrl: "https://example.test",
+                contextWindow: 1000,
+                cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
+                id: "executor",
+                input: ["text"],
+                maxTokens: 100,
+                name: "Executor",
+                reasoning: false,
+              },
+              {
+                api: "test-api",
+                baseUrl: "https://example.test",
+                contextWindow: 1000,
+                cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
+                id: "advisor",
+                input: ["text"],
+                maxTokens: 100,
+                name: "Advisor",
+                reasoning: true,
+              },
+            ],
+            streamSimple: () => {
+              providerCalled = true;
+              throw new Error("Provider wrapper should not run without auth.");
+            },
+          });
+          const executor = registry.find("provider", "executor");
+          if (!executor) {
+            throw new Error("Test Executor model was not registered.");
+          }
+          const context = asExtensionContext({
+            abort: () => {},
+            cwd: agentDir,
+            hasUI: true,
+            isProjectTrusted: () => false,
+            mode: "json",
+            model: executor,
+            modelRegistry: registry,
+            sessionManager: {
+              buildContextEntries: () => [],
+              getBranch: () => [],
+            },
+            ui: {
+              notify: (message: string) => notifications.push(message),
+              setStatus: () => {},
+            },
+          });
+          loadConfig(context);
+          const session = new AdvisorSessionState();
+          const sent: { message: any; options: any }[] = [];
+          const pi = mockPi({ sent });
+          const herdrBlock = new HerdrAdvisorBlock(
+            () => {},
+            () => true,
+            (active) => blockedEvents.push(active)
+          );
+          const event = {
+            input: { command: "echo repeated" },
+            toolName: "bash" as const,
+            type: "tool_call" as const,
+          };
+          const runGate = (toolCallId: string) =>
+            handleAutomaticGate(
+              pi,
+              { ...event, toolCallId },
+              context,
+              session,
+              runAdvisorGate,
+              new ScoutStatusManager(false),
+              herdrAdvisorActivity.createScope(),
+              herdrBlock
+            );
+          expect(await runGate("first-gate-call")).toBeUndefined();
+          const effect = await runGate("second-gate-call");
+          expect(effect).toMatchObject({
+            block: true,
+            reason: expect.stringContaining("Advisor gate provider-error"),
+          });
+          expect(session.blocked).toBe(true);
+          expect(blockedEvents).toEqual([true]);
+          expect(notifications[0]).toContain(
+            "Advisor gate failure; session blocked"
+          );
+          expect(
+            sent.some(({ message }) =>
+              message.content.includes("Advisor gate failure (provider-error)")
+            )
+          ).toBe(true);
+          expect(providerCalled).toBe(false);
+        }
+      );
+    } finally {
+      if (previousEnvValue === undefined) {
+        delete process.env.PI_ADVISOR_TEST_MISSING_GATE_KEY;
+      } else {
+        process.env.PI_ADVISOR_TEST_MISSING_GATE_KEY = previousEnvValue;
+      }
     }
   });
 

@@ -1854,6 +1854,14 @@ var resolveConfiguredModel = async (ctx, ref, label) => {
   if (!model) {
     throw new Error(`${label} model not found: ${ref}`);
   }
+  const { streamSimple } = ctx.modelRegistry;
+  if (streamSimple) {
+    return {
+      model,
+      ref,
+      streamSimple: streamSimple.bind(ctx.modelRegistry)
+    };
+  }
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) {
     throw new Error(auth.error);
@@ -1949,9 +1957,28 @@ var createCoalescedUpdate = (publish, intervalMs = ADVISOR_STREAM_UPDATE_INTERVA
     }
   };
 };
-var collectTextStream = async (resolved, options, streamModel = stream) => {
-  let thinking = "";
-  let text = "";
+var SIMPLE_REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"];
+var toSimpleReasoning = (effort) => {
+  if (effort === undefined || effort === "off") {
+    return;
+  }
+  const level = SIMPLE_REASONING_LEVELS.find((candidate) => candidate === effort);
+  if (!level) {
+    throw new Error(`Unsupported Advisor reasoning level: ${effort}`);
+  }
+  return level;
+};
+var createTextEventStream = (resolved, options, streamModel) => {
+  const context = {
+    messages: options.messages,
+    systemPrompt: options.systemPrompt
+  };
+  if (!streamModel && resolved.streamSimple) {
+    return resolved.streamSimple(resolved.model, context, {
+      reasoning: toSimpleReasoning(options.reasoning),
+      signal: options.signal
+    });
+  }
   const streamOptions = {
     apiKey: resolved.apiKey,
     env: resolved.env,
@@ -1962,7 +1989,12 @@ var collectTextStream = async (resolved, options, streamModel = stream) => {
   if (options.reasoning !== undefined) {
     streamOptions.reasoningEffort = options.reasoning;
   }
-  const eventStream = streamModel(resolved.model, { messages: options.messages, systemPrompt: options.systemPrompt }, streamOptions);
+  return (streamModel ?? stream)(resolved.model, context, streamOptions);
+};
+var collectTextStream = async (resolved, options, streamModel) => {
+  let thinking = "";
+  let text = "";
+  const eventStream = createTextEventStream(resolved, options, streamModel);
   for await (const event of eventStream) {
     if (event.type === "thinking_delta") {
       thinking += event.delta;

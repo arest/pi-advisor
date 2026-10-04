@@ -2,19 +2,27 @@ import { stream } from "@earendil-works/pi-ai/compat";
 import type {
   Api,
   AssistantMessage,
+  AssistantMessageEventStream,
+  Context,
   Message,
   Model,
+  SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { splitRef } from "./config/state.ts";
 
 export interface ResolvedConfiguredModel {
-  apiKey: string;
+  apiKey?: string;
   env?: Record<string, string>;
   headers?: Record<string, string | null>;
   model: Model<Api>;
   ref: string;
+  streamSimple?: (
+    model: Model<Api>,
+    context: Context,
+    options?: SimpleStreamOptions
+  ) => AssistantMessageEventStream;
 }
 
 export const resolveConfiguredModel = async (
@@ -30,6 +38,14 @@ export const resolveConfiguredModel = async (
   const model = ctx.modelRegistry.find(...lookup);
   if (!model) {
     throw new Error(`${label} model not found: ${ref}`);
+  }
+  const { streamSimple } = ctx.modelRegistry;
+  if (streamSimple) {
+    return {
+      model,
+      ref,
+      streamSimple: streamSimple.bind(ctx.modelRegistry),
+    };
   }
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) {
@@ -179,30 +195,61 @@ export const createCoalescedUpdate = <T>(
   };
 };
 
-export const collectTextStream = async (
+const SIMPLE_REASONING_LEVELS: readonly NonNullable<
+  SimpleStreamOptions["reasoning"]
+>[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+const toSimpleReasoning = (
+  effort: string | undefined
+): SimpleStreamOptions["reasoning"] => {
+  if (effort === undefined || effort === "off") {
+    return undefined;
+  }
+  const level = SIMPLE_REASONING_LEVELS.find(
+    (candidate) => candidate === effort
+  );
+  if (!level) {
+    throw new Error(`Unsupported Advisor reasoning level: ${effort}`);
+  }
+  return level;
+};
+
+const createTextEventStream = (
   resolved: ResolvedConfiguredModel,
   options: CollectTextStreamOptions,
-  streamModel: typeof stream = stream
-): Promise<CollectedTextStream> => {
-  let thinking = "";
-  let text = "";
-  const streamOptions: Parameters<typeof streamModel>[2] = {
+  streamModel?: typeof stream
+): AssistantMessageEventStream => {
+  const context: Context = {
+    messages: options.messages,
+    systemPrompt: options.systemPrompt,
+  };
+  if (!streamModel && resolved.streamSimple) {
+    return resolved.streamSimple(resolved.model, context, {
+      reasoning: toSimpleReasoning(options.reasoning),
+      signal: options.signal,
+    });
+  }
+  const streamOptions: NonNullable<Parameters<typeof stream>[2]> = {
     apiKey: resolved.apiKey,
     env: resolved.env,
     headers: resolved.headers,
-    // SAFETY: stream() models the provider-facing reasoning field as never; options.reasoning is the Pi-facing effort string.
-    reasoning: options.reasoning as never,
+    reasoning: options.reasoning,
     signal: options.signal,
   };
   if (options.reasoning !== undefined) {
-    // SAFETY: reasoningEffort takes the same effort string; kept absent when reasoning is unset.
-    streamOptions.reasoningEffort = options.reasoning as never;
+    streamOptions.reasoningEffort = options.reasoning;
   }
-  const eventStream = streamModel(
-    resolved.model,
-    { messages: options.messages, systemPrompt: options.systemPrompt },
-    streamOptions
-  );
+  return (streamModel ?? stream)(resolved.model, context, streamOptions);
+};
+
+export const collectTextStream = async (
+  resolved: ResolvedConfiguredModel,
+  options: CollectTextStreamOptions,
+  streamModel?: typeof stream
+): Promise<CollectedTextStream> => {
+  let thinking = "";
+  let text = "";
+  const eventStream = createTextEventStream(resolved, options, streamModel);
 
   for await (const event of eventStream) {
     if (event.type === "thinking_delta") {
