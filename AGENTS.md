@@ -19,7 +19,6 @@ bun test
 bun run typecheck
 bun run lint
 bun run format:check
-git -c diff.stat=false diff --no-ext-diff --check --no-stat
 ```
 
 ## Source organization
