@@ -1,0 +1,31 @@
+name: Welcome new pull requests
+
+on:
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post welcome comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --method POST \
+            --field body='Thank you for PR. A maintainer will check this soon. If you have not already done so, please link this PR to an Issue or create a corresponding issue for it.'
+
+      - name: Request review
+        if: github.event.pull_request.user.login != 'philipbrembeck'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
+            --method POST \
+            --field reviewers[]='philipbrembeck'
