@@ -36,6 +36,67 @@ describe("Conversation Module", () => {
     expect(recentConversation(ctx, 0)).toBe("");
   });
 
+  test("legacy host fallback respects reset and compaction boundaries", () => {
+    const ctx = asExtensionContext({
+      sessionManager: {
+        getBranch: () => [
+          {
+            id: "old",
+            message: { content: "cleared private prompt", role: "user" },
+            type: "message",
+          },
+          { id: "reset", type: "reset_boundary" },
+          {
+            id: "current",
+            message: { content: "current request", role: "user" },
+            type: "message",
+          },
+        ],
+      },
+    });
+    const conversation = recentConversation(ctx);
+    expect(conversation).not.toContain("cleared private prompt");
+    expect(conversation).toContain("current request");
+  });
+
+  test("legacy host fallback applies the latest compaction boundary", () => {
+    const ctx = asExtensionContext({
+      sessionManager: {
+        getBranch: () => [
+          {
+            id: "old",
+            message: { content: "discarded private history", role: "user" },
+            type: "message",
+          },
+          {
+            id: "kept",
+            message: { content: "retained request", role: "user" },
+            type: "message",
+          },
+          {
+            firstKeptEntryId: "kept",
+            id: "compaction",
+            parentId: null,
+            summary: "safe summary",
+            timestamp: "2026-01-01T00:00:00Z",
+            tokensBefore: 1000,
+            type: "compaction",
+          },
+          {
+            id: "new",
+            message: { content: "current work", role: "user" },
+            type: "message",
+          },
+        ],
+      },
+    });
+    const conversation = recentConversation(ctx);
+    expect(conversation).not.toContain("discarded private history");
+    expect(conversation).toContain("System Compaction Summary");
+    expect(conversation).toContain("retained request");
+    expect(conversation).toContain("current work");
+  });
+
   test("recentConversation keeps complete semantic entries and marks omitted older context", () => {
     const ctx = asExtensionContext({
       sessionManager: {

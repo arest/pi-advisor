@@ -44,7 +44,6 @@ const contextFor = (cwd: string, faux: any, entries: object[]) =>
       getApiKeyAndHeaders: () => Promise.resolve({ apiKey: "key", ok: true }),
     },
     sessionManager: {
-      buildContextEntries: () => entries,
       getBranch: () => entries,
     },
   });
@@ -208,6 +207,219 @@ describe("Advisor image disclosure", () => {
     );
     expect(pixels(bad)).toEqual([]);
     expect(text(bad)).toContain("pixels not reviewed");
+  });
+
+  test("OMP fallback does not disclose images before a reset boundary", async () => {
+    const faux = registerFauxProvider({
+      api: "pi-advisor-image-reset-test",
+      models: [{ id: "advisor", input: ["text", "image"] }],
+      provider: "pi-advisor-image-reset-test",
+    });
+    let request: any;
+    try {
+      await withAgentDir(
+        {
+          advisor: "pi-advisor-image-reset-test/advisor",
+          advisorGitContext: "off",
+          advisorScoutEnabled: true,
+          executor: "pi-advisor-image-reset-test/advisor",
+        },
+        async (agentDir) => {
+          faux.setResponses([
+            (context) => {
+              const scoutUser = context.messages.find(
+                (message) => message.role === "user"
+              );
+              if (
+                scoutUser?.role !== "user" ||
+                !Array.isArray(scoutUser.content) ||
+                scoutUser.content[0]?.type !== "text"
+              ) {
+                throw new Error("Missing Scout manifest");
+              }
+              const manifest = JSON.parse(scoutUser.content[0].text);
+              const manifestText = JSON.stringify(manifest);
+              expect(manifestText).not.toContain("Sensitive old image");
+              expect(manifestText).not.toContain("[Image ref=");
+              const required = manifest.groups.find(
+                (group: any) => group.required
+              );
+              return fauxAssistantMessage(
+                JSON.stringify({ selectedIds: [required.id], synthesis: "" })
+              );
+            },
+            (context) => {
+              request = context.messages.find(
+                (message) => message.role === "user"
+              );
+              return fauxAssistantMessage("Advice");
+            },
+          ]);
+          const outcome = await consultAdvisor(
+            contextFor(agentDir, faux, [
+              {
+                ...userEntry,
+                message: {
+                  ...userEntry.message,
+                  content: [
+                    { text: "Sensitive old image request", type: "text" },
+                    image,
+                  ],
+                },
+              },
+              { id: "reset", type: "reset_boundary" },
+              {
+                id: "current",
+                message: { content: "Review current code", role: "user" },
+                type: "message",
+              },
+            ])
+          );
+          expect(outcome.scout).toMatchObject({ ok: true });
+        }
+      );
+      expect(pixels(request)).toEqual([]);
+      expect(text(request)).not.toContain("Sensitive old image request");
+      expect(text(request)).toContain("Review current code");
+    } finally {
+      faux.unregister();
+    }
+  });
+
+  test("OMP fallback without Scout excludes images before reset boundaries", async () => {
+    const request = await capturedConsultation(
+      ["text", "image"],
+      [
+        {
+          ...userEntry,
+          id: "discarded-image",
+          message: {
+            ...userEntry.message,
+            content: [{ text: "Discarded image request", type: "text" }, image],
+          },
+        },
+        { id: "reset", type: "reset_boundary" },
+        {
+          id: "current",
+          message: { content: "Current request", role: "user" },
+          type: "message",
+        },
+      ]
+    );
+    expect(pixels(request)).toEqual([]);
+    expect(text(request)).not.toContain("Discarded image request");
+    expect(text(request)).toContain("Current request");
+  });
+
+  test("OMP fallback with compaction forwards only retained images", async () => {
+    const discardedImage = image;
+    const retainedImage = {
+      data: readFileSync(
+        join(import.meta.dir, "fixtures/red-pixel.jpg")
+      ).toString("base64"),
+      mimeType: "image/jpeg",
+      type: "image" as const,
+    };
+    const oldImageEntry = {
+      ...userEntry,
+      id: "old-image",
+      message: {
+        ...userEntry.message,
+        content: [
+          { text: "Discarded image evidence", type: "text" },
+          discardedImage,
+        ],
+      },
+    };
+    const keptImageEntry = {
+      ...userEntry,
+      id: "kept-image",
+      message: {
+        ...userEntry.message,
+        content: [
+          { text: "Retained image evidence", type: "text" },
+          retainedImage,
+        ],
+      },
+    };
+    const faux = registerFauxProvider({
+      api: "pi-advisor-image-compaction-test",
+      models: [{ id: "advisor", input: ["text", "image"] }],
+      provider: "pi-advisor-image-compaction-test",
+    });
+    let request: any;
+    try {
+      await withAgentDir(
+        {
+          advisor: "pi-advisor-image-compaction-test/advisor",
+          advisorGitContext: "off",
+          advisorScoutEnabled: true,
+          executor: "pi-advisor-image-compaction-test/advisor",
+        },
+        async (agentDir) => {
+          faux.setResponses([
+            (context) => {
+              const scoutUser = context.messages.find(
+                (message) => message.role === "user"
+              );
+              if (
+                scoutUser?.role !== "user" ||
+                !Array.isArray(scoutUser.content) ||
+                scoutUser.content[0]?.type !== "text"
+              ) {
+                throw new Error("Missing Scout manifest");
+              }
+              const manifest = JSON.parse(scoutUser.content[0].text);
+              const manifestText = JSON.stringify(manifest);
+              expect(manifestText).not.toContain("Discarded image evidence");
+              const retainedGroup = manifest.groups.find((group: any) =>
+                group.content.includes("Retained image evidence")
+              );
+              expect(retainedGroup).toBeDefined();
+              return fauxAssistantMessage(
+                JSON.stringify({
+                  selectedIds: [retainedGroup.id],
+                  synthesis: "",
+                })
+              );
+            },
+            (context) => {
+              request = context.messages.find(
+                (message) => message.role === "user"
+              );
+              return fauxAssistantMessage("Advice");
+            },
+          ]);
+          const outcome = await consultAdvisor(
+            contextFor(agentDir, faux, [
+              oldImageEntry,
+              keptImageEntry,
+              {
+                firstKeptEntryId: "kept-image",
+                id: "compaction",
+                parentId: null,
+                summary: "Compaction summary",
+                timestamp: "2026-01-01T00:00:00Z",
+                tokensBefore: 1000,
+                type: "compaction",
+              },
+              {
+                id: "current",
+                message: { content: "Review current code", role: "user" },
+                type: "message",
+              },
+            ])
+          );
+          expect(outcome.scout).toMatchObject({ ok: true });
+        }
+      );
+      expect(pixels(request)).toEqual([retainedImage]);
+      expect(pixels(request)).not.toContainEqual(discardedImage);
+      expect(text(request)).not.toContain("Discarded image evidence");
+      expect(text(request)).toContain("Retained image evidence");
+    } finally {
+      faux.unregister();
+    }
   });
 
   test("does not forward older images omitted by the conversation budget", async () => {

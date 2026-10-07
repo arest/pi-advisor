@@ -7,6 +7,7 @@ import type { AdvisorToolPolicies } from "./config/types.ts";
 import { contentParts, isRecordOf, isString } from "./content-utils.ts";
 import type { RecordValue } from "./content-utils.ts";
 import { detectImageFormat } from "./image-validation.ts";
+import { sessionContextEntries } from "./session-context.ts";
 
 export const ADVISOR_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
 export const ADVISOR_IMAGES_TOTAL_MAX_BYTES = 8 * 1024 * 1024;
@@ -120,16 +121,15 @@ export const selectedConversationImages = (
   if (!conversation) {
     return { imagePartsSeen: 0, selected: [] };
   }
-  const entries = selectedEntryIds
-    ? ctx.sessionManager.buildContextEntries()
-    : ctx.sessionManager.getBranch();
+  const entries = sessionContextEntries(ctx);
   const images: SelectedImage[] = [];
   const seen = new Set<string>();
   let imagePartsSeen = 0;
   for (const [index, entry] of entries.entries()) {
     if (
       entry.type !== "message" ||
-      (selectedEntryIds && !selectedEntryIds.has(entry.id ?? String(index)))
+      (selectedEntryIds !== undefined &&
+        !selectedEntryIds.has(entry.id ?? String(index)))
     ) {
       continue;
     }

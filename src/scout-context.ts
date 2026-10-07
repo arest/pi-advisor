@@ -19,6 +19,7 @@ import type {
   ScoutContextGroup,
   ScoutManifestResult,
 } from "./scout-types.ts";
+import { sessionContextEntries } from "./session-context.ts";
 
 // Re-exports preserve scout-context's historical public import surface.
 export { reconstructScoutConversation } from "./scout-reconstruct.ts";
@@ -174,7 +175,7 @@ export const buildScoutManifest = (
   ctx: ExtensionContext,
   options: BuildScoutManifestOptions = {}
 ): ScoutManifestResult => {
-  const entries = ctx.sessionManager.buildContextEntries();
+  const entries = sessionContextEntries(ctx);
   const caps = resolveCaps(options);
   const indexed = indexToolCalls(entries);
   if (!indexed.ok) {

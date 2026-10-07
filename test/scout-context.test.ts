@@ -13,6 +13,12 @@ const entry = (id: string, message: any) => ({
   timestamp: "2026-01-01T00:00:00Z",
   type: "message",
 });
+const boundary = (id: string, type: "reset_boundary") => ({
+  id,
+  parentId: null,
+  timestamp: "2026-01-01T00:00:00Z",
+  type,
+});
 const user = (id: string, content: string) =>
   entry(id, { content, role: "user", timestamp: 1 });
 const assistant = (id: string, content: unknown[], stopReason = "toolUse") =>
@@ -72,6 +78,169 @@ describe("Scout context", () => {
     expect(exchange.kind).toBe("tool-exchange");
     expect(exchange.content).toContain("first");
     expect(exchange.content).toContain("second");
+  });
+
+  test("falls back to getBranch when context-entry projection is unavailable", () => {
+    const built = buildScoutManifest(
+      asExtensionContext({
+        sessionManager: { getBranch: () => [user("u1", "request")] },
+      })
+    );
+
+    expect(built.ok).toBe(true);
+    if (built.ok) {
+      expect(built.manifest.groups[0]?.content).toContain("request");
+    }
+  });
+
+  test("fallback omits history before the latest reset boundary", () => {
+    const built = buildScoutManifest(
+      asExtensionContext({
+        sessionManager: {
+          getBranch: () => [
+            user("old", "cleared secret request"),
+            boundary("reset", "reset_boundary"),
+            user("current", "current request"),
+          ],
+        },
+      })
+    );
+
+    expect(built.ok).toBe(true);
+    if (built.ok) {
+      const disclosed = built.manifest.groups
+        .map((group) => group.content)
+        .join("\n");
+      expect(disclosed).not.toContain("cleared secret request");
+      expect(disclosed).toContain("current request");
+    }
+  });
+
+  test("preserves the host-projected entries unchanged", () => {
+    const entries = [
+      user("old", "host-selected old context"),
+      boundary("reset", "reset_boundary"),
+      user("current", "host-selected current context"),
+    ];
+    const built = buildScoutManifest(
+      asExtensionContext({
+        sessionManager: {
+          buildContextEntries: () => entries,
+          getBranch: () => [user("fallback", "wrong fallback branch")],
+        },
+      })
+    );
+
+    expect(built.ok).toBe(true);
+    if (built.ok) {
+      const disclosed = built.manifest.groups
+        .map((group) => group.content)
+        .join("\n");
+      expect(disclosed).toContain("host-selected old context");
+      expect(disclosed).toContain("host-selected current context");
+      expect(disclosed).not.toContain("wrong fallback branch");
+    }
+  });
+
+  test("fallback includes the latest compaction and only its retained tail", () => {
+    const built = buildScoutManifest(
+      asExtensionContext({
+        sessionManager: {
+          getBranch: () => [
+            user("old", "discarded secret history"),
+            user("kept", "retained request"),
+            {
+              firstKeptEntryId: "kept",
+              id: "compaction",
+              parentId: null,
+              summary: "safe compaction summary",
+              timestamp: "2026-01-01T00:00:00Z",
+              type: "compaction",
+            },
+            user("after", "post-compaction request"),
+          ],
+        },
+      })
+    );
+
+    expect(built.ok).toBe(true);
+    if (built.ok) {
+      const disclosed = built.manifest.groups
+        .map((group) => group.content)
+        .join("\n");
+      expect(disclosed).not.toContain("discarded secret history");
+      expect(disclosed).toContain("retained request");
+      expect(disclosed).toContain("safe compaction summary");
+      expect(disclosed).toContain("post-compaction request");
+    }
+  });
+
+  test("reset before compaction retains the post-reset compaction tail", () => {
+    const built = buildScoutManifest(
+      asExtensionContext({
+        sessionManager: {
+          getBranch: () => [
+            user("old", "cleared private history"),
+            boundary("reset", "reset_boundary"),
+            user("kept", "retained after reset"),
+            {
+              firstKeptEntryId: "kept",
+              id: "compaction",
+              parentId: null,
+              summary: "post-reset summary",
+              timestamp: "2026-01-01T00:00:00Z",
+              type: "compaction",
+            },
+            user("after", "newer request"),
+          ],
+        },
+      })
+    );
+
+    expect(built.ok).toBe(true);
+    if (built.ok) {
+      const disclosed = built.manifest.groups
+        .map((group) => group.content)
+        .join("\n");
+      expect(disclosed).not.toContain("cleared private history");
+      expect(disclosed).toContain("retained after reset");
+      expect(disclosed).toContain("post-reset summary");
+      expect(disclosed).toContain("newer request");
+    }
+  });
+
+  test("reset after compaction takes precedence over compacted history", () => {
+    const built = buildScoutManifest(
+      asExtensionContext({
+        sessionManager: {
+          getBranch: () => [
+            user("old", "discarded secret history"),
+            user("kept", "retained request"),
+            {
+              firstKeptEntryId: "kept",
+              id: "compaction",
+              parentId: null,
+              summary: "safe compaction summary",
+              timestamp: "2026-01-01T00:00:00Z",
+              type: "compaction",
+            },
+            boundary("reset", "reset_boundary"),
+            user("current", "fresh request"),
+          ],
+        },
+      })
+    );
+
+    expect(built.ok).toBe(true);
+    if (built.ok) {
+      const disclosed = built.manifest.groups
+        .map((group) => group.content)
+        .join("\n");
+      expect(disclosed).not.toContain("discarded secret history");
+      expect(disclosed).not.toContain("retained request");
+      expect(disclosed).not.toContain("safe compaction summary");
+      expect(disclosed).toContain("fresh request");
+    }
   });
 
   test("rejects duplicate calls and adjacent unknown tool results", () => {

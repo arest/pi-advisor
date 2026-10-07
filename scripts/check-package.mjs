@@ -73,6 +73,7 @@ const expectedFiles = [
   "src/scout-reconstruct.ts",
   "src/scout-types.ts",
   "src/scout.ts",
+  "src/session-context.ts",
   "src/session-state.ts",
   "src/tool-result-cap.ts",
   "src/tools.ts",

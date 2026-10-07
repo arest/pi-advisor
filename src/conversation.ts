@@ -11,6 +11,7 @@ import { contentParts, isRecordOf, isString } from "./content-utils.ts";
 import type { RecordValue } from "./content-utils.ts";
 import { imageMarker } from "./images.ts";
 import { redactSecrets } from "./redaction.ts";
+import { sessionContextEntries } from "./session-context.ts";
 import { capToolResult } from "./tool-result-cap.ts";
 
 const textFromPart = <Part>(part: Part): string => {
@@ -204,8 +205,7 @@ export const recentConversation = (
   if (maxChars === 0) {
     return "";
   }
-  const entries = ctx.sessionManager
-    .getBranch()
+  const entries = sessionContextEntries(ctx)
     .map((entry) =>
       conversationEntry(
         entry,

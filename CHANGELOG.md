@@ -9,6 +9,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 ### Fixed
 
 - Avoided a startup crash when a host omits `systemPromptOptions` from `before_agent_start`.
+- Prevented OMP's legacy session-history fallback from disclosing entries or images before the latest reset boundary or outside the latest compaction's retained range.
+
+### Changed
+
+- Documented support for OMP session managers without Pi's `buildContextEntries()` projection.
 
 ## 0.11.1 - 2026-10-04
 
