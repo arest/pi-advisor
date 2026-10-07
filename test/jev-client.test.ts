@@ -4,6 +4,7 @@ import { noul } from "@typesafe-ai/sdk";
 import type { Fetch } from "@typesafe-ai/sdk";
 
 import { JevClient, JevFailure } from "../src/jev/client.ts";
+import { screeningQuestions } from "../src/jev/questions.ts";
 
 const API_KEY = "tsk-test-key-material-9f8e7d6c";
 
@@ -53,6 +54,15 @@ const client = (fetch: Fetch, timeoutMs = 5000) =>
     transport: "typesafe",
   });
 
+const decisionsClient = (fetch: Fetch, timeoutMs = 5000) =>
+  new JevClient({
+    apiKey: API_KEY,
+    fetch,
+    model: "ignored",
+    timeoutMs,
+    transport: "openai-decisions",
+  });
+
 describe("JevClient.ask", () => {
   test("returns answers and computed usage cost", async () => {
     const result = await client(async () => jsonResponse(validBody)).ask(
@@ -79,9 +89,8 @@ describe("JevClient.ask", () => {
     });
     expect(result.answers.proceed).toBeDefined();
     expect(captured?.url).toBe("https://api.typesafe.ai/v1/systemone");
-    // SAFETY: JevClient always sends a plain header record, never Headers or tuple lists.
-    const headers = captured?.init?.headers as Record<string, string>;
-    expect(headers.authorization).toBe(`Bearer ${API_KEY}`);
+    const headers = new Headers(captured?.init?.headers);
+    expect(headers.get("authorization")).toBe(`Bearer ${API_KEY}`);
     expect(JSON.parse(String(captured?.init?.body)).model).toBe("jev-test");
   });
 
@@ -267,5 +276,158 @@ describe("JevClient.ask", () => {
       })
     ).ask(state, { proceed: noul("Proceed?") });
     expect(result.usage).toEqual({ cost: 0, inputTokens: 0, outputTokens: 0 });
+  });
+});
+
+const decisionsBody = {
+  answers: [
+    {
+      confidence: 0.9,
+      name: "stakes",
+      probabilities: [
+        { label: "High", probability: 0.05, value: 2 },
+        { label: "Negligible", probability: 0.9, value: 0 },
+        { label: "Moderate", probability: 0.05, value: 1 },
+      ],
+      score: 0.15,
+      type: "score",
+    },
+    {
+      name: "self_answerable",
+      probability: 0.9,
+      type: "predicate",
+    },
+  ],
+  model: "gpt-6-luna",
+  usage: { input_tokens: 159, output_tokens: 0 },
+};
+
+describe("OpenAI Decisions JevClient", () => {
+  test("sends bounded state and named questions to the fixed endpoint/model", async () => {
+    let captured: { url: string; init?: RequestInit } | undefined;
+    const result = await new JevClient({
+      apiKey: API_KEY,
+      fetch: async (url, init) => {
+        captured = { init, url };
+        return jsonResponse(decisionsBody);
+      },
+      model: "ignored-jev-model",
+      pricePerMtok: 999,
+      timeoutMs: 5000,
+      transport: "openai-decisions",
+    }).ask(state, screeningQuestions);
+
+    expect(captured?.url).toBe("https://api.openai.com/v1/decisions");
+    const headers = new Headers(captured?.init?.headers);
+    expect(headers.get("authorization")).toBe(`Bearer ${API_KEY}`);
+    const body = JSON.parse(String(captured?.init?.body));
+    expect(body).toEqual({
+      input: JSON.stringify(state, null, 2),
+      model: "gpt-6-luna",
+      questions: [
+        {
+          instructions: expect.stringContaining(
+            "Can the executor confidently resolve"
+          ),
+          name: "self_answerable",
+          type: "predicate",
+        },
+        {
+          instructions: expect.stringContaining("How material are the stakes"),
+          levels: [
+            {
+              description: expect.stringContaining("Negligible:"),
+              label: "Negligible",
+            },
+            {
+              description: expect.stringContaining("Moderate:"),
+              label: "Moderate",
+            },
+            { description: expect.stringContaining("High:"), label: "High" },
+          ],
+          name: "stakes",
+          type: "score",
+        },
+      ],
+    });
+    expect(result.answers.self_answerable).toEqual({ noul: 0.9, type: "noul" });
+    expect(result.answers.stakes).toMatchObject({
+      probabilities: { "0": 0.9, "1": 0.05, "2": 0.05 },
+      type: "score",
+    });
+    expect(result.model).toBe("gpt-6-luna");
+    expect(result.usage).toEqual({
+      cost: undefined,
+      inputTokens: 159,
+      outputTokens: 0,
+    });
+  });
+
+  test("classifies auth and validation failures without retrying or leaking secrets", async () => {
+    let calls = 0;
+    const auth = await expectJevFailure(
+      decisionsClient(async () => {
+        calls += 1;
+        return jsonResponse({ error: `Bearer ${API_KEY}` }, 401);
+      }).ask(state, screeningQuestions)
+    );
+    expect(auth.category).toBe("auth");
+    expect(auth.message).not.toContain(API_KEY);
+    expect(auth.message).toContain("[REDACTED SECRET]");
+    expect(calls).toBe(1);
+
+    const validation = await expectJevFailure(
+      decisionsClient(async () =>
+        jsonResponse({ error: { message: "invalid decision schema" } }, 422)
+      ).ask(state, screeningQuestions)
+    );
+    expect(validation.category).toBe("malformed");
+    expect(validation.message).toContain("invalid decision schema");
+  });
+
+  test("keeps timeout and caller cancellation behavior for Decisions requests", async () => {
+    const timeout = await expectJevFailure(
+      decisionsClient(hangingFetch(), 100).ask(state, screeningQuestions)
+    );
+    expect(timeout.category).toBe("timeout");
+
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      decisionsClient(hangingFetch()).ask(
+        state,
+        screeningQuestions,
+        controller.signal
+      )
+    ).rejects.toThrow("Jev call aborted by the caller.");
+  });
+
+  test("retries transient errors and validates the Decisions JSON contract", async () => {
+    let calls = 0;
+    const result = await new JevClient({
+      apiKey: API_KEY,
+      fetch: async () => {
+        calls += 1;
+        return calls === 1
+          ? jsonResponse({ error: "slow down" }, 429)
+          : jsonResponse(decisionsBody);
+      },
+      model: "unused",
+      timeoutMs: 5000,
+      transport: "openai-decisions",
+    }).ask(state, screeningQuestions);
+    expect(calls).toBe(2);
+    expect(result.usage.inputTokens).toBe(159);
+
+    const malformed = await expectJevFailure(
+      new JevClient({
+        apiKey: API_KEY,
+        fetch: async () => new Response("not json", { status: 200 }),
+        model: "unused",
+        timeoutMs: 5000,
+        transport: "openai-decisions",
+      }).ask(state, screeningQuestions)
+    );
+    expect(malformed.category).toBe("malformed");
   });
 });

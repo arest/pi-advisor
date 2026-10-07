@@ -57,7 +57,7 @@ const repeatSkipText = (advice: string) =>
 
 const outageNotifier = createOutageNotifier(
   (category, message) =>
-    `Advisor Jev filter failed (${category}); allowing consultations. ${message}`
+    `Advisor Jev/Decisions filter failed (${category}); allowing consultations. ${message}`
 );
 
 const notifyOutageOnce = outageNotifier.notify;
@@ -107,7 +107,7 @@ const screenWithJev = async (
     notifyOutageOnce(
       ctx,
       "missing-key",
-      "No Jev credentials resolved (no TypeSafe key and no OpenRouter login)."
+      "No credentials resolved for the selected Jev/Decisions provider."
     );
     return allow();
   }

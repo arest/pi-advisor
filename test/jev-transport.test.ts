@@ -77,4 +77,130 @@ describe("resolveJevTransport", () => {
     });
     expect(credentials).toBeUndefined();
   });
+
+  test("explicit OpenAI Decisions accepts only known Platform API-key sources", async () => {
+    setAdvisorJevTransportRef("openai-decisions");
+    const allowedSources: [
+      string,
+      "openai-env" | "openai-provider-credential",
+    ][] = [
+      ["OPENAI_API_KEY", "openai-env"],
+      ["stored credential", "openai-provider-credential"],
+    ];
+    for (const [source, expectedSource] of allowedSources) {
+      const lookups: string[] = [];
+      const credentials = await resolveJevTransport(undefined, {
+        getProviderAuth: async (provider) => {
+          lookups.push(provider);
+          return { auth: { apiKey: "sk-platform-key" }, source };
+        },
+        getProviderKey: async (provider) => {
+          lookups.push(provider);
+          return "openrouter-key";
+        },
+        resolveOpenAIKey: async () => {
+          lookups.push("extension-openai-key");
+          return { key: "extension-key", source: "openai-file" };
+        },
+        resolveTypesafe: async () => {
+          lookups.push("typesafe");
+          return { key: "typesafe-key", source: "env" };
+        },
+      });
+      expect(credentials).toEqual({
+        apiKey: "sk-platform-key",
+        source: expectedSource,
+        transport: "openai-decisions",
+      });
+      expect(lookups).toEqual(["openai"]);
+    }
+  });
+
+  test("falls back to the extension-owned key when Pi has no Platform API key", async () => {
+    setAdvisorJevTransportRef("openai-decisions");
+    const lookups: string[] = [];
+    const credentials = await resolveJevTransport(undefined, {
+      getProviderAuth: async (provider) => {
+        lookups.push(provider);
+        return { auth: { apiKey: "subscription-token" }, source: "OAuth" };
+      },
+      getProviderKey: async (provider) => {
+        lookups.push(provider);
+        return "openrouter-key";
+      },
+      resolveOpenAIKey: async () => {
+        lookups.push("extension-openai-key");
+        return { key: "extension-platform-key", source: "openai-file" };
+      },
+      resolveTypesafe: async () => {
+        lookups.push("typesafe");
+        return { key: "typesafe-key", source: "env" };
+      },
+    });
+    expect(credentials).toEqual({
+      apiKey: "extension-platform-key",
+      source: "openai-file",
+      transport: "openai-decisions",
+    });
+    expect(lookups).toEqual(["openai", "extension-openai-key"]);
+  });
+
+  test("rejects OAuth and unknown OpenAI auth sources without provider fallbacks", async () => {
+    setAdvisorJevTransportRef("openai-decisions");
+    for (const source of ["OAuth", "unknown source", undefined]) {
+      const lookups: string[] = [];
+      const credentials = await resolveJevTransport(undefined, {
+        getProviderAuth: async (provider) => {
+          lookups.push(provider);
+          return { auth: { apiKey: "oauth-or-unknown-token" }, source };
+        },
+        getProviderKey: async (provider) => {
+          lookups.push(provider);
+          return "openrouter-key";
+        },
+        resolveOpenAIKey: async () => ({}),
+        resolveTypesafe: async () => {
+          lookups.push("typesafe");
+          return { key: "typesafe-key", source: "env" };
+        },
+      });
+      expect(credentials).toBeUndefined();
+      expect(lookups).toEqual(["openai"]);
+    }
+  });
+
+  test("returns no explicit OpenAI transport when both key stores are empty", async () => {
+    setAdvisorJevTransportRef("openai-decisions");
+    const lookups: string[] = [];
+    const credentials = await resolveJevTransport(undefined, {
+      getProviderAuth: async (provider) => {
+        lookups.push(provider);
+        return undefined;
+      },
+      getProviderKey: async (provider) => {
+        lookups.push(provider);
+        return "openrouter-key";
+      },
+      resolveOpenAIKey: async () => {
+        lookups.push("extension-openai-key");
+        return {};
+      },
+      resolveTypesafe: async () => {
+        lookups.push("typesafe");
+        return { key: "typesafe-key", source: "env" };
+      },
+    });
+    expect(credentials).toBeUndefined();
+    expect(lookups).toEqual(["openai", "extension-openai-key"]);
+  });
+
+  test("fails closed when OpenAI auth resolution throws", async () => {
+    setAdvisorJevTransportRef("openai-decisions");
+    const credentials = await resolveJevTransport(undefined, {
+      getProviderAuth: () => Promise.reject(new Error("OAuth refresh failed")),
+      resolveOpenAIKey: () => Promise.resolve({}),
+      resolveTypesafe: typesafeKey,
+    });
+    expect(credentials).toBeUndefined();
+  });
 });

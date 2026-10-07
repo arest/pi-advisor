@@ -8,6 +8,16 @@ import {
 import { isNumber, isRecord, isRecordOf, isString } from "../content-utils.ts";
 import type { JsonValue, RecordValue } from "../content-utils.ts";
 import { redactSecrets } from "../redaction.ts";
+import {
+  buildDecisionsRequest,
+  OPENAI_DECISIONS_ENDPOINT,
+  OPENAI_DECISIONS_MODEL,
+} from "./decisions-client.ts";
+import type { DecisionsQuestion } from "./decisions-client.ts";
+import {
+  normalizeDecisionsResponse,
+  parseDecisionsApiResponse,
+} from "./decisions-response.ts";
 import { JevFailureError } from "./failure.ts";
 import type { JevErrorCategory } from "./failure.ts";
 import type { JevCredentials, JevTransportKind } from "./transport.ts";
@@ -16,7 +26,7 @@ export type { JevErrorCategory } from "./failure.ts";
 export { JevFailureError as JevFailure } from "./failure.ts";
 
 export interface JevUsage {
-  cost: number;
+  cost?: number;
   inputTokens: number;
   outputTokens: number;
 }
@@ -37,6 +47,7 @@ export interface JevClientOptions {
 }
 
 const ENDPOINTS: Record<JevTransportKind, string> = {
+  "openai-decisions": OPENAI_DECISIONS_ENDPOINT,
   openrouter: "https://openrouter.ai/api/alpha/decisions",
   typesafe: "https://api.typesafe.ai/v1/systemone",
 };
@@ -71,11 +82,31 @@ const statusCategory = (status: number): JevErrorCategory => {
   return "error";
 };
 
-const isObjectLike = <Value>(value: Value): value is Value & object =>
-  typeof value === "object";
-
 const openRouterModelId = (model: string) =>
   model.includes("/") ? model : `~typesafe/${model}`;
+
+interface ClientRequest {
+  body: string;
+  decisionQuestions?: DecisionsQuestion[];
+}
+
+const buildClientRequest = (
+  transport: JevTransportKind,
+  model: string,
+  state: EntryType,
+  questions: Questions
+): ClientRequest => {
+  if (transport === "openai-decisions") {
+    const request = buildDecisionsRequest(state, questions);
+    return {
+      body: JSON.stringify(request),
+      decisionQuestions: request.questions,
+    };
+  }
+  return {
+    body: JSON.stringify({ model, questions, state }),
+  };
+};
 
 interface AttemptOutcome {
   answers?: RecordValue;
@@ -116,9 +147,7 @@ const sleepWithAbort = (signal: AbortSignal, ms: number): Promise<void> => {
   });
 };
 
-/** One systemone client for both transports with a total wall deadline so
- * retries can never stall a tool call; errors are classified and redacted on
- * every path. */
+/** Shared Jev client with a total deadline, bounded retries, and redacted errors for every provider. */
 export class JevClient {
   readonly #apiKey: string;
   readonly #endpoint: string;
@@ -126,6 +155,7 @@ export class JevClient {
   readonly #model: string;
   readonly #pricePerMtok: number | undefined;
   readonly #timeoutMs: number;
+  readonly #transport: JevTransportKind;
 
   constructor({
     apiKey,
@@ -139,9 +169,16 @@ export class JevClient {
     this.#endpoint = ENDPOINTS[transport];
     // SAFETY: the bound global fetch satisfies the SDK Fetch signature; binding keeps the receiver correct.
     this.#fetch = fetch ?? (globalThis.fetch.bind(globalThis) as Fetch);
-    this.#model = transport === "openrouter" ? openRouterModelId(model) : model;
+    if (transport === "openai-decisions") {
+      this.#model = OPENAI_DECISIONS_MODEL;
+    } else if (transport === "openrouter") {
+      this.#model = openRouterModelId(model);
+    } else {
+      this.#model = model;
+    }
     this.#pricePerMtok = pricePerMtok;
     this.#timeoutMs = timeoutMs;
+    this.#transport = transport;
   }
 
   async ask(
@@ -149,6 +186,12 @@ export class JevClient {
     questions: Questions,
     signal?: AbortSignal
   ): Promise<JevAskResult> {
+    const { body, decisionQuestions } = buildClientRequest(
+      this.#transport,
+      this.#model,
+      state,
+      questions
+    );
     const deadline = new AbortController();
     const abortFromCaller = () => deadline.abort(signal?.reason);
     signal?.addEventListener("abort", abortFromCaller, { once: true });
@@ -161,16 +204,11 @@ export class JevClient {
       deadline.abort(new Error("Jev wall-time budget elapsed"));
     }, this.#timeoutMs);
     timer.unref?.();
-    const body = JSON.stringify({
-      model: this.#model,
-      questions,
-      state,
-    });
     try {
       let outcome: AttemptOutcome = {};
       for (let attempt = 1; ; attempt += 1) {
         // The retry loop is bounded to one backoff by the deadline controller.
-        outcome = await this.#attempt(body, deadline.signal);
+        outcome = await this.#attempt(body, deadline.signal, decisionQuestions);
         if (
           !outcome.retryable ||
           attempt >= MAX_ATTEMPTS ||
@@ -229,7 +267,11 @@ export class JevClient {
     throw new JevFailureError("error", "Jev call failed.");
   }
 
-  async #attempt(body: string, signal: AbortSignal): Promise<AttemptOutcome> {
+  async #attempt(
+    body: string,
+    signal: AbortSignal,
+    decisionQuestions?: DecisionsQuestion[]
+  ): Promise<AttemptOutcome> {
     if (signal.aborted) {
       return { retryable: false };
     }
@@ -254,7 +296,7 @@ export class JevClient {
       };
     }
     if (response.ok) {
-      return this.#parseSuccess(response);
+      return this.#parseSuccess(response, decisionQuestions);
     }
     const failure = await this.#failureFromStatus(response);
     return {
@@ -279,10 +321,32 @@ export class JevClient {
   }
 
   #transportLabel(): string {
-    return this.#endpoint === ENDPOINTS.openrouter ? "OpenRouter" : "TypeSafe";
+    if (this.#transport === "openrouter") {
+      return "OpenRouter";
+    }
+    return this.#transport === "openai-decisions"
+      ? "OpenAI Decisions"
+      : "TypeSafe";
   }
 
-  async #parseSuccess(response: Response): Promise<AttemptOutcome> {
+  async #parseSuccess(
+    response: Response,
+    decisionQuestions?: DecisionsQuestion[]
+  ): Promise<AttemptOutcome> {
+    if (this.#transport === "openai-decisions") {
+      const normalized = normalizeDecisionsResponse(
+        await parseDecisionsApiResponse(response),
+        decisionQuestions ?? []
+      );
+      return {
+        answers: normalized.answers,
+        model: normalized.model,
+        usage: {
+          input_tokens: normalized.usage.inputTokens,
+          output_tokens: normalized.usage.outputTokens,
+        },
+      };
+    }
     let parsed: unknown;
     try {
       parsed = await response.json();
@@ -294,7 +358,7 @@ export class JevClient {
         ),
       };
     }
-    if (!isRecord(parsed) || !parsed.answers || !isObjectLike(parsed.answers)) {
+    if (!isRecord(parsed) || !isRecord(parsed.answers)) {
       return {
         failure: new JevFailureError(
           "malformed",
@@ -303,8 +367,7 @@ export class JevClient {
       };
     }
     return {
-      // SAFETY: the response contract guarantees an answers object; the shape is re-validated per key by consumers.
-      answers: parsed.answers as RecordValue,
+      answers: parsed.answers,
       model: isString(parsed.model) ? parsed.model : this.#model,
       usage: isRecordOf(parsed.usage)
         ? {
@@ -324,7 +387,10 @@ export class JevClient {
       answers: outcome.answers ?? {},
       model: outcome.model ?? this.#model,
       usage: {
-        cost: (inputTokens / 1_000_000) * price,
+        cost:
+          this.#transport === "openai-decisions"
+            ? undefined
+            : (inputTokens / 1_000_000) * price,
         inputTokens,
         outputTokens,
       },

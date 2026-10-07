@@ -4,6 +4,12 @@ All notable changes to this project are documented here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0/).
 
+## Unreleased
+
+### Added
+
+- Added OpenAI Decisions as an optional, explicitly selected Jev/Decisions screening provider, with live-verified setup and secure Platform API-key storage; the existing `auto` TypeSafe → OpenRouter behavior remains unchanged.
+
 ## 0.11.2 - 2026-10-07
 
 ### Fixed

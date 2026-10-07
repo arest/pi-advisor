@@ -1,0 +1,32 @@
+{
+  "model": "gpt-6-luna",
+  "answers": [
+    {
+      "type": "refusal",
+      "name": "self_answerable"
+    },
+    {
+      "type": "score",
+      "name": "stakes",
+      "score": 0.15,
+      "probabilities": [
+        { "value": 0, "label": "Negligible", "probability": 0.9 },
+        { "value": 1, "label": "Moderate", "probability": 0.05 },
+        { "value": 2, "label": "High", "probability": 0.05 }
+      ],
+      "confidence": 0.9
+    }
+  ],
+  "usage": {
+    "input_tokens": 159,
+    "input_tokens_details": {
+      "cached_tokens": 0,
+      "cache_write_tokens": 0
+    },
+    "output_tokens": 0,
+    "output_tokens_details": {
+      "reasoning_tokens": 0
+    },
+    "total_tokens": 159
+  }
+}

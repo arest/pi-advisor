@@ -1,131 +1,45 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { Key, matchesKey } from "@earendil-works/pi-tui";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
-import { noul } from "@typesafe-ai/sdk";
 
-import { jevClientFromCredentials } from "../jev/client.ts";
+import type { JevCredentials, JevTransportKind } from "../jev/transport.ts";
+import { redactSecrets } from "../redaction.ts";
+import { renderJevSetup, setupActions } from "./jev-setup-submenu-view.ts";
 import {
-  clearKeyTypeSafeKey,
-  consumePlaintextKeyWarning,
-  removeTypeSafeKeyFromAdvisorJson,
-  writeKeyTypeSafeKey,
-} from "../jev/key-store.ts";
-import type { JevKeyStoreResult } from "../jev/key-store.ts";
-import { resolveJevTransport } from "../jev/transport.ts";
-import type { JevCredentials } from "../jev/transport.ts";
+  canClearCredential,
+  canReplaceWithEnteredKey,
+  consumeSetupPlaintextWarning,
+  defaultSetupDeps,
+  fireAndForget,
+} from "./jev-setup-support.ts";
+import type {
+  JevSetupSubmenuOptions,
+  JevSetupViewState,
+  SetupAction,
+  SetupMode,
+} from "./jev-setup-support.ts";
 import { MaskedInput } from "./masked-input.ts";
-import type { RenderRequester } from "./types.ts";
+import type { JevSetupDeps, JevSetupSelection } from "./types.ts";
 
-export interface JevSetupSubmenuOptions {
-  currentValue: string;
-  done: (selectedValue?: string) => void;
-  theme: Theme;
-  tui: RenderRequester;
-}
-
-export interface JevSetupDeps {
-  clearStoredKey?: () => Promise<JevKeyStoreResult>;
-  removePlaintextKey?: () => JevKeyStoreResult;
-  resolveTransport?: () => Promise<JevCredentials | undefined>;
-  verify?: (credentials: JevCredentials) => Promise<JevFailureLike>;
-  writeKey?: (key: string) => Promise<JevKeyStoreResult>;
-}
-
-interface JevFailureLike {
-  message?: string;
-  ok: boolean;
-}
-
-type SetupMode = "menu" | "key-entry" | "verifying";
-type SetupAction =
-  | "verify-enable"
-  | "verify-again"
-  | "disable"
-  | "disable-clear"
-  | "enter-key"
-  | "done";
-
-const ACTION_LABELS: Record<SetupAction, string> = {
-  disable: "Disable",
-  "disable-clear": "Disable and clear stored key",
-  done: "Done",
-  "enter-key": "Enter a TypeSafe API key",
-  "verify-again": "Verify again",
-  "verify-enable": "Verify and enable",
-};
-
-const fireAndForget = async (action: Promise<unknown>): Promise<void> => {
-  try {
-    await action;
-  } catch {
-    // Background setup actions surface their own notices.
-  }
-};
-
-const transportLabel = (credentials: JevCredentials): string => {
-  if (credentials.transport === "openrouter") {
-    return "OpenRouter (reusing pi login)";
-  }
-  switch (credentials.source) {
-    case "advisor-json": {
-      return "TypeSafe (key: advisor.json — plaintext, not recommended)";
-    }
-    case "bun-secrets": {
-      return "TypeSafe (key: Bun.secrets)";
-    }
-    case "file": {
-      return "TypeSafe (key: stored file, mode 0600)";
-    }
-    default: {
-      return "TypeSafe (key: TYPESAFE_API_KEY)";
-    }
-  }
-};
-
-const defaultVerify = async (credentials: JevCredentials) => {
-  const client = jevClientFromCredentials(credentials);
-  try {
-    await client.ask(
-      { purpose: "pi-advisor setup verification" },
-      { verified: noul("Answer yes.") }
-    );
-    return { ok: true };
-  } catch (error) {
-    return {
-      message: error instanceof Error ? error.message : String(error),
-      ok: false,
-    };
-  }
-};
-
-/** Guided Jev credentials setup: detects a reusable login, verifies live
- * before enabling, and never echoes an entered key back. */
 export class JevSetupSubmenu implements Component, Focusable {
   private readonly options: JevSetupSubmenuOptions;
-  private readonly deps: JevSetupDeps;
-  private readonly maskedInput: MaskedInput;
+  private readonly deps: Required<JevSetupDeps>;
+  private maskedInput: MaskedInput;
   private credentials: JevCredentials | undefined;
+  private selectedTransport: JevTransportKind | undefined;
   private mode: SetupMode = "menu";
   private notice: string | undefined;
   private selectedIndex = 0;
+  private filterEnabled: boolean;
+  private canEnterKey = false;
+  private pendingSelectionRefresh = false;
   private _focused = true;
 
   constructor(options: JevSetupSubmenuOptions, deps: JevSetupDeps = {}) {
     this.options = options;
-    this.deps = {
-      clearStoredKey: deps.clearStoredKey ?? clearKeyTypeSafeKey,
-      removePlaintextKey:
-        deps.removePlaintextKey ?? removeTypeSafeKeyFromAdvisorJson,
-      resolveTransport: deps.resolveTransport ?? (() => resolveJevTransport()),
-      verify: deps.verify ?? defaultVerify,
-      writeKey: deps.writeKey ?? writeKeyTypeSafeKey,
-    };
-    this.maskedInput = new MaskedInput({
-      onEscape: () => this.options.done(),
-      onSubmit: (value) => this.submitEnteredKey(value),
-      placeholder: "Paste a TypeSafe API key",
-    });
-    void fireAndForget(this.refresh());
+    this.filterEnabled = options.currentValue === "On";
+    this.deps = { ...defaultSetupDeps, ...options.setupDeps, ...deps };
+    this.maskedInput = this.createMaskedInput("Paste a TypeSafe API key");
+    void fireAndForget(this.refresh(), this.reportBackgroundError);
   }
 
   get focused(): boolean {
@@ -150,7 +64,7 @@ export class JevSetupSubmenu implements Component, Focusable {
     if (this.mode !== "menu") {
       return;
     }
-    const actions = this.actions();
+    const actions = setupActions(this.viewState());
     if (
       matchesKey(keyData, Key.down) ||
       keyData === "\u001B[B" ||
@@ -173,184 +87,288 @@ export class JevSetupSubmenu implements Component, Focusable {
   }
 
   render(width: number): string[] {
-    const { theme } = this.options;
-    const enabled = this.options.currentValue === "On";
-    const lines = [
-      theme.fg("accent", theme.bold("  Jev consultation filter")),
-      "",
-    ];
-    if (this.credentials) {
-      lines.push(
-        `  Transport: ${transportLabel(this.credentials)}`,
-        `  Filter: ${enabled ? "On" : "Off"}`
-      );
-    } else if (this.mode === "verifying") {
-      lines.push("  Checking available Jev credentials…");
-    } else {
-      lines.push(
-        "  No Jev credentials found. Enter a TypeSafe API key below, or add",
-        "  an OpenRouter login in pi; it is reused automatically."
-      );
-    }
-    if (this.notice) {
-      lines.push("", theme.fg("warning", `  ${this.notice}`));
-    }
-    lines.push("");
-    if (this.mode === "verifying") {
-      lines.push("  Verifying with a live Jev call…");
-    } else if (this.mode === "key-entry") {
-      lines.push(
-        `  ${this.maskedInput.render(Math.max(10, width - 4))[0] ?? ""}`,
-        theme.fg("dim", "  Enter: verify · Esc: cancel")
-      );
-    } else {
-      for (const [index, label] of this.labels().entries()) {
-        const prefix = index === this.selectedIndex ? "→ " : "  ";
-        lines.push(`${prefix}${label}`);
-      }
-    }
-    return lines.map((line) => truncateToWidth(line, width));
+    return renderJevSetup(
+      this.options,
+      this.viewState(),
+      this.maskedInput,
+      width
+    );
   }
 
-  private actions(): SetupAction[] {
-    if (!this.credentials) {
-      return this.options.currentValue === "On"
-        ? ["enter-key", "disable", "done"]
-        : ["enter-key", "done"];
-    }
-    const enabled = this.options.currentValue === "On";
-    const actions: SetupAction[] = [enabled ? "verify-again" : "verify-enable"];
-    actions.push("disable");
-    if (
-      this.credentials.source === "bun-secrets" ||
-      this.credentials.source === "file"
-    ) {
-      actions.push("disable-clear");
-    }
-    actions.push("done");
-    return actions;
+  private viewState(): JevSetupViewState {
+    return {
+      canEnterKey: this.canEnterKey,
+      credentials: this.credentials,
+      filterEnabled: this.filterEnabled,
+      mode: this.mode,
+      notice: this.notice,
+      selectedIndex: this.selectedIndex,
+      selectedTransport: this.selectedTransport,
+    };
   }
 
-  private labels(): string[] {
-    return this.actions().map((action) => ACTION_LABELS[action]);
+  private createMaskedInput(placeholder: string): MaskedInput {
+    return new MaskedInput({
+      onEscape: () => this.cancelKeyEntry(),
+      onSubmit: (value) => this.submitEnteredKey(value),
+      placeholder,
+    });
   }
 
   private async refresh(): Promise<void> {
-    const wasVerifying = this.mode === "verifying";
-    this.mode = "verifying";
-    if (!wasVerifying) {
-      this.options.tui.requestRender();
-    }
-    this.credentials = await this.deps.resolveTransport?.();
-    this.mode = "menu";
-    this.selectedIndex = 0;
-    if (this.credentials?.source === "advisor-json") {
-      this.notice ??= consumePlaintextKeyWarning();
-    }
+    this.mode = "resolving";
     this.options.tui.requestRender();
+    try {
+      const credentials = await this.deps.resolveTransport(
+        this.options.currentTransport === "auto"
+          ? undefined
+          : this.options.currentTransport
+      );
+      this.credentials = credentials;
+      this.selectedTransport = credentials?.transport;
+      this.mode = "menu";
+      this.selectedIndex = 0;
+      if (credentials?.source === "advisor-json") {
+        this.notice = consumeSetupPlaintextWarning();
+      }
+      this.options.tui.requestRender();
+    } catch (error) {
+      this.reportBackgroundError(
+        error instanceof Error ? error.message : String(error)
+      );
+    }
   }
 
   private activate(action: SetupAction): void {
     if (action === "done") {
-      this.options.done();
-      return;
-    }
-    if (action === "enter-key") {
-      this.mode = "key-entry";
+      this.closeSetup();
       return;
     }
     if (action === "disable") {
       this.notice = undefined;
-      this.options.done("Off");
+      if (
+        this.commitSelection(
+          {
+            enabled: false,
+            transport: this.options.currentTransport,
+          },
+          "Off"
+        )
+      ) {
+        this.filterEnabled = false;
+      }
       return;
     }
-    if (action === "disable-clear") {
-      void fireAndForget(this.disableAndClear());
+    if (action === "clear-stored-key") {
+      void fireAndForget(this.disableAndClear(), this.reportBackgroundError);
       return;
     }
-    if (action === "verify-again" || action === "verify-enable") {
-      void fireAndForget(this.verifyAndEnable());
+    if (action === "enter-key") {
+      if (this.selectedTransport) {
+        this.openKeyEntry(this.selectedTransport);
+      }
+      return;
     }
+    void fireAndForget(this.selectProvider(action), this.reportBackgroundError);
+  }
+
+  private reportBackgroundError = (message: string): void => {
+    this.mode = "menu";
+    this.notice = `Setup failed: ${redactSecrets(message)}`;
+    this.options.tui.requestRender();
+  };
+
+  private async selectProvider(transport: JevTransportKind): Promise<void> {
+    this.selectedTransport = transport;
+    this.mode = "resolving";
+    this.notice = undefined;
+    this.canEnterKey = false;
+    this.options.tui.requestRender();
+    let credentials: JevCredentials | undefined;
+    try {
+      credentials = await this.deps.resolveTransport(transport);
+    } catch (error) {
+      this.mode = "menu";
+      this.notice = `Credential lookup failed: ${redactSecrets(error instanceof Error ? error.message : String(error))}`;
+      this.options.tui.requestRender();
+      return;
+    }
+    this.credentials = credentials;
+    this.mode = "menu";
+    if (!credentials) {
+      if (transport === "typesafe" || transport === "openai-decisions") {
+        this.notice = undefined;
+        this.openKeyEntry(transport);
+      } else {
+        this.notice = "No OpenRouter Pi login found. Add one in Pi and retry.";
+      }
+      this.options.tui.requestRender();
+      return;
+    }
+    if (credentials.transport !== transport) {
+      this.notice =
+        "The selected provider did not resolve matching credentials.";
+      this.options.tui.requestRender();
+      return;
+    }
+    await this.verifyAndEnable(credentials);
+  }
+
+  private openKeyEntry(transport: JevTransportKind): void {
+    this.selectedTransport = transport;
+    this.mode = "key-entry";
+    const placeholder =
+      transport === "openai-decisions"
+        ? "Paste an OpenAI Platform API key"
+        : "Paste a TypeSafe API key";
+    this.maskedInput = this.createMaskedInput(placeholder);
+    this.maskedInput.focused = this._focused;
+    this.options.tui.requestRender();
+  }
+
+  private cancelKeyEntry(): void {
+    this.mode = "menu";
+    this.selectedTransport = undefined;
+    this.maskedInput.setValue("");
+    this.options.tui.requestRender();
+  }
+
+  private async submitEnteredKey(value: string): Promise<void> {
+    const transport = this.selectedTransport;
+    const key = value.trim();
+    this.maskedInput.setValue("");
+    if (!transport || !key) {
+      return;
+    }
+    await this.verifyAndEnable({ apiKey: key, transport }, key);
+  }
+
+  private async verifyAndEnable(
+    credentials: JevCredentials,
+    enteredKey?: string
+  ): Promise<void> {
+    this.mode = "verifying";
+    this.notice = undefined;
+    this.options.tui.requestRender();
+    const outcome = await this.deps.verify(credentials);
+    if (!outcome.ok) {
+      this.notice = `Verification failed: ${outcome.message ?? "unknown error"}`;
+      this.mode = enteredKey ? "key-entry" : "menu";
+      this.canEnterKey = !enteredKey && canReplaceWithEnteredKey(credentials);
+      this.options.tui.requestRender();
+      return;
+    }
+    const keyToStore =
+      enteredKey ??
+      (credentials.transport === "typesafe" &&
+      credentials.source === "advisor-json"
+        ? credentials.apiKey
+        : undefined);
+    if (keyToStore) {
+      const stored = await this.deps.writeKey(
+        keyToStore,
+        credentials.transport
+      );
+      if (!stored.ok) {
+        this.notice = stored.message;
+        this.mode = "key-entry";
+        this.canEnterKey = false;
+        this.options.tui.requestRender();
+        return;
+      }
+      if (
+        credentials.transport === "typesafe" &&
+        credentials.source === "advisor-json"
+      ) {
+        const removed = this.deps.removePlaintextKey();
+        this.notice = removed.ok
+          ? "Key moved from advisor.json into the secure store."
+          : `Stored securely, but ${removed.message}`;
+      } else {
+        this.notice = `${stored.message} Verification succeeded.`;
+      }
+    }
+    this.credentials = credentials;
+    const saved = this.commitSelection(
+      { enabled: true, transport: credentials.transport },
+      "On"
+    );
+    if (!saved) {
+      this.mode = "menu";
+      this.notice ??= "Provider verified, but settings could not be saved.";
+      this.options.tui.requestRender();
+      return;
+    }
+    this.filterEnabled = true;
+    this.mode = "menu";
+    this.canEnterKey = false;
+    this.options.tui.requestRender();
+  }
+
+  private commitSelection(
+    selection: JevSetupSelection,
+    legacyValue: string
+  ): boolean {
+    if (this.options.onSelection) {
+      if (!this.options.onSelection(selection)) {
+        return false;
+      }
+      this.closeSetup(true);
+      return true;
+    }
+    this.options.done(legacyValue);
+    return true;
+  }
+
+  private closeSetup(refreshSettings = false): void {
+    this.options.done();
+    if (refreshSettings || this.pendingSelectionRefresh) {
+      this.options.afterSelection?.();
+    }
+    this.pendingSelectionRefresh = false;
   }
 
   private async disableAndClear(): Promise<void> {
-    const clear = this.deps.clearStoredKey;
-    if (!clear) {
+    const { credentials } = this;
+    if (!(credentials && canClearCredential(credentials))) {
       return;
     }
-    const result = await clear();
+    if (this.options.onSelection) {
+      const saved = this.options.onSelection({
+        enabled: false,
+        transport: this.options.currentTransport,
+      });
+      if (!saved) {
+        this.mode = "menu";
+        this.notice =
+          "Could not save the disabled state; the key was not cleared.";
+        this.options.tui.requestRender();
+        return;
+      }
+      this.filterEnabled = false;
+      this.pendingSelectionRefresh = true;
+    }
+    this.mode = "clearing";
+    this.notice = undefined;
+    this.options.tui.requestRender();
+    const result = await this.deps.clearStoredKey(credentials.transport);
+    this.mode = "menu";
     this.notice = result.message;
     if (!result.ok) {
       this.options.tui.requestRender();
       return;
     }
     this.credentials = undefined;
-    this.options.done("Off");
-  }
-
-  private async verifyAndEnable(): Promise<void> {
-    const { credentials } = this;
-    if (!(credentials && this.deps.verify)) {
-      return;
-    }
-    this.mode = "verifying";
-    this.notice = undefined;
-    this.options.tui.requestRender();
-    const outcome = await this.deps.verify(credentials);
-    this.mode = "menu";
-    if (!outcome.ok) {
-      this.notice = `Verification failed: ${outcome.message ?? "unknown error"}`;
-      this.options.tui.requestRender();
-      return;
-    }
-    if (
-      credentials.transport === "typesafe" &&
-      credentials.source === "advisor-json"
+    if (this.options.onSelection) {
+      this.closeSetup();
+    } else if (
+      this.commitSelection(
+        { enabled: false, transport: this.options.currentTransport },
+        "Off"
+      )
     ) {
-      const stored = await this.deps.writeKey?.(credentials.apiKey);
-      if (!stored?.ok) {
-        this.notice =
-          stored?.message ??
-          "Storing the key failed; the plaintext advisor.json key keeps working.";
-        this.options.tui.requestRender();
-        return;
-      }
-      const removed = this.deps.removePlaintextKey?.();
-      this.notice = removed?.ok
-        ? "Key moved from advisor.json into the secure store."
-        : `Stored securely, but ${removed?.message ?? "removing the plaintext copy failed; remove it yourself."}`;
+      this.filterEnabled = false;
     }
-    this.options.done("On");
-  }
-
-  private async submitEnteredKey(value: string): Promise<void> {
-    const key = value.trim();
-    if (!key) {
-      return;
-    }
-    if (!this.deps.verify) {
-      return;
-    }
-    this.mode = "verifying";
     this.options.tui.requestRender();
-    const outcome = await this.deps.verify({
-      apiKey: key,
-      transport: "typesafe",
-    });
-    this.mode = "menu";
-    if (!outcome.ok) {
-      this.notice = `Verification failed: ${outcome.message ?? "unknown error"}`;
-      this.options.tui.requestRender();
-      return;
-    }
-    const stored = await this.deps.writeKey?.(key);
-    if (!stored?.ok) {
-      this.notice = stored?.message ?? "Storing the key failed.";
-      this.options.tui.requestRender();
-      return;
-    }
-    this.notice = `${stored.message} Verification succeeded.`;
-    await this.refresh();
-    this.options.done("On");
   }
 }

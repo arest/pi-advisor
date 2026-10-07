@@ -69,7 +69,7 @@ export interface JevTurnGateRegistration {
 
 const outageNotifier = createOutageNotifier(
   (category, message) =>
-    `Advisor Jev turn gate failed (${category}); continuing without a proactive consultation. ${message}`
+    `Advisor Jev/Decisions turn gate failed (${category}); continuing without a proactive consultation. ${message}`
 );
 
 const notifyFailureOnce = outageNotifier.notify;
@@ -133,7 +133,7 @@ export const handleJevTurnEnd = async (
       notifyFailureOnce(
         ctx,
         "missing-key",
-        "No Jev credentials resolved (no TypeSafe key and no OpenRouter login)."
+        "No credentials resolved for the selected Jev/Decisions provider."
       );
       return;
     }

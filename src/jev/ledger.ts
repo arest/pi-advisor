@@ -4,6 +4,8 @@ export interface AdvisorJevUsageTotals {
   cost: number;
   inputTokens: number;
   outputTokens: number;
+  unavailableCostCalls: number;
+  knownCostCalls: number;
 }
 
 export interface AdvisorJevFilterLedger {
@@ -29,7 +31,7 @@ export interface AdvisorJevLedger {
 }
 
 export interface AdvisorJevUsage {
-  cost: number;
+  cost?: number;
   inputTokens: number;
   outputTokens: number;
 }
@@ -49,7 +51,9 @@ export interface JevInvocationView {
 const freshJevUsage = (): AdvisorJevUsageTotals => ({
   cost: 0,
   inputTokens: 0,
+  knownCostCalls: 0,
   outputTokens: 0,
+  unavailableCostCalls: 0,
 });
 
 const freshJevLedger = (): AdvisorJevLedger => ({
@@ -66,7 +70,12 @@ const freshJevLedger = (): AdvisorJevLedger => ({
 });
 
 const addJevUsage = (totals: AdvisorJevUsageTotals, usage: AdvisorJevUsage) => {
-  totals.cost += usage.cost;
+  if (usage.cost === undefined) {
+    totals.unavailableCostCalls += 1;
+  } else {
+    totals.cost += usage.cost;
+    totals.knownCostCalls += 1;
+  }
   totals.inputTokens += usage.inputTokens;
   totals.outputTokens += usage.outputTokens;
 };
@@ -81,6 +90,15 @@ const savingsLine = (costs: number[], skipped: number) => {
 
 const formatJevTokens = (usage: AdvisorJevUsageTotals) =>
   `↑${formatTokenCount(usage.inputTokens + usage.outputTokens)}`;
+
+const jevCostText = (usage: AdvisorJevUsageTotals) => {
+  if (usage.unavailableCostCalls > 0) {
+    return usage.knownCostCalls > 0
+      ? `cost unavailable (known-provider estimates $${usage.cost.toFixed(4)}; Decisions billing unconfirmed)`
+      : "cost unavailable (Decisions billing unconfirmed)";
+  }
+  return `$${usage.cost.toFixed(4)}`;
+};
 
 const markdownCosts = (invocations: readonly JevInvocationView[]): number[] =>
   invocations
@@ -101,7 +119,7 @@ const filterLine = (filter: AdvisorJevFilterLedger) => {
   if (filter.failures > 0) {
     parts.push(`${filter.failures} failure${filter.failures === 1 ? "" : "s"}`);
   }
-  return `Jev filter: ${parts.join(", ")}`;
+  return `Jev/Decisions filter: ${parts.join(", ")}`;
 };
 
 const gateLine = (
@@ -115,7 +133,7 @@ const gateLine = (
     )
     .map((item) => item.cost);
   const gateSpend = consultationCosts.reduce((sum, cost) => sum + cost, 0);
-  return `Turn gate: ${gate.checks} check${gate.checks === 1 ? "" : "s"} (Jev ${formatJevTokens(gate.usage)} · $${gate.usage.cost.toFixed(4)}), ${gate.consultations} consultation${gate.consultations === 1 ? "" : "s"} ($${gateSpend.toFixed(4)})`;
+  return `Turn gate: ${gate.checks} check${gate.checks === 1 ? "" : "s"} (Jev/Decisions ${formatJevTokens(gate.usage)} · ${jevCostText(gate.usage)}), ${gate.consultations} consultation${gate.consultations === 1 ? "" : "s"} ($${gateSpend.toFixed(4)})`;
 };
 
 /** One session's Jev screening and turn-gate accounting plus summary lines. */
@@ -206,9 +224,13 @@ export class AdvisorJevLedgerState {
     } else if (this.#filterActive()) {
       lines.push(filterLine(filter));
       const jevTokens = usage.inputTokens + usage.outputTokens;
-      if (jevTokens > 0) {
+      if (jevTokens > 0 || usage.unavailableCostCalls > 0) {
+        const cost =
+          usage.unavailableCostCalls > 0
+            ? jevCostText(usage)
+            : `$${usage.cost.toFixed(4)} (input only; output free)`;
         lines.push(
-          `Jev cost: ${formatJevTokens(usage)} tokens · $${usage.cost.toFixed(4)} (input only; output free)`
+          `Jev/Decisions cost: ${formatJevTokens(usage)} tokens · ${cost}`
         );
       }
       if (filter.skipped > 0) {

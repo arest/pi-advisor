@@ -183,11 +183,6 @@ const applyJevMutation = (
       settings.jevPricePerMtok = Number(value);
       return true;
     }
-    case "jevTransport": {
-      // SAFETY: value comes from the fixed jevTransport options of the settings list.
-      settings.jevTransport = value as AdvisorSettings["jevTransport"];
-      return true;
-    }
     default: {
       return false;
     }

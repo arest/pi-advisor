@@ -141,9 +141,14 @@ const applyAdvisorSettings = (settings: AdvisorSettings) => {
   applyDisclosureSettings(settings);
 };
 
+export interface SaveAdvisorSettingsOptions {
+  skipOutcomeLogging?: boolean;
+}
+
 export const saveAdvisorSettings = (
   ctx: ExtensionContext,
-  settings: AdvisorSettings
+  settings: AdvisorSettings,
+  options: SaveAdvisorSettingsOptions = {}
 ) => {
   const previous = getAdvisorSettings();
   try {
@@ -153,7 +158,9 @@ export const saveAdvisorSettings = (
       persistAdvisor: Boolean(persisted.advisor),
       persistExecutor: Boolean(persisted.executor),
     });
-    saveGlobalOutcomeLogging(settings.outcomeLogging ?? false);
+    if (!options.skipOutcomeLogging) {
+      saveGlobalOutcomeLogging(settings.outcomeLogging ?? false);
+    }
   } catch (error) {
     applyAdvisorSettings(previous);
     throw error;

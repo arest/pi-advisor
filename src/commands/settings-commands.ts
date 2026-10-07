@@ -5,6 +5,10 @@ import {
   setAlwaysOnRef,
 } from "../config/state.ts";
 import { saveConfig } from "../config/storage.ts";
+import {
+  resolveJevTransport,
+  resolveJevTransportFor,
+} from "../jev/transport.ts";
 import { AdvisorSettingsSelector } from "../ui/settings-selector.ts";
 import { loadCommandConfig } from "./activation-preparation.ts";
 import {
@@ -30,6 +34,12 @@ export const registerSettingsCommands = (runtime: CommandRuntime) => {
           new AdvisorSettingsSelector({
             effortLevels: EFFORT_LEVELS,
             initial,
+            jevSetupDeps: {
+              resolveTransport: (transport) =>
+                transport
+                  ? resolveJevTransportFor(transport, ctx)
+                  : resolveJevTransport(ctx),
+            },
             keybindings,
             modelRefs: getConfiguredModelRefs(ctx),
             onCancel: () => done(undefined),
@@ -46,6 +56,39 @@ export const registerSettingsCommands = (runtime: CommandRuntime) => {
                   "error"
                 );
               }
+            },
+            onJevSetup: (selection, settings) => {
+              try {
+                saveAdvisorSettings(
+                  ctx,
+                  {
+                    ...settings,
+                    jevFilterEnabled: selection.enabled,
+                    jevTransport: selection.transport,
+                  },
+                  { skipOutcomeLogging: true }
+                );
+              } catch (error) {
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                ctx.ui.notify(
+                  `Could not save Advisor settings: ${message}`,
+                  "error"
+                );
+                return false;
+              }
+              try {
+                runtime.updateSameModelNotice(ctx);
+                runtime.updateAdvisorUsageStatus(ctx);
+              } catch (error) {
+                const message =
+                  error instanceof Error ? error.message : String(error);
+                ctx.ui.notify(
+                  `Advisor settings were saved, but the status refresh failed: ${message}`,
+                  "warning"
+                );
+              }
+              return true;
             },
             presets: CONTEXT_PRESETS,
             theme,

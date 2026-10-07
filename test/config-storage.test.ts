@@ -119,6 +119,37 @@ describe("Advisor config persistence", () => {
     expect(getAdvisorSettings().simpleMode).toBe(previous.simpleMode);
   });
 
+  test("Jev setup skips a separate outcome-consent write and preserves the stored field", () => {
+    writeFileSync(
+      configPath(),
+      JSON.stringify({
+        advisor: "openai-codex/advisor",
+        advisorJevTransport: "auto",
+        advisorOutcomeLogging: true,
+        futureSetting: "preserve",
+      })
+    );
+    loadConfig(context);
+    const previous = getAdvisorSettings();
+    saveAdvisorSettings(
+      context,
+      {
+        ...previous,
+        jevFilterEnabled: true,
+        jevTransport: "openai-decisions",
+        outcomeLogging: false,
+      },
+      { skipOutcomeLogging: true }
+    );
+
+    expect(readSavedConfig()).toMatchObject({
+      advisorJevFilterEnabled: true,
+      advisorJevTransport: "openai-decisions",
+      advisorOutcomeLogging: true,
+      futureSetting: "preserve",
+    });
+  });
+
   test("persists intentional clears as deletions", () => {
     writeFileSync(
       configPath(),

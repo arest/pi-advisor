@@ -33,6 +33,8 @@ import { FALLBACK_ADVISOR_MODEL_DISABLED } from "./types.ts";
 import type {
   AdvisorSettings,
   ContextPreset,
+  JevSetupDeps,
+  JevSetupSelection,
   RenderRequester,
 } from "./types.ts";
 
@@ -42,6 +44,9 @@ export interface SettingsItemsOptions {
   modelWhitelist: SettingItem;
   presets: ContextPreset[];
   settings: AdvisorSettings;
+  afterJevSetup?: () => void;
+  jevSetupDeps?: JevSetupDeps;
+  onJevSetup?: (selection: JevSetupSelection) => boolean;
   theme: Theme;
   tui: RenderRequester;
 }
@@ -78,16 +83,28 @@ const scoutTimeoutItem = (settings: AdvisorSettings): SettingItem => {
 const jevItems = (
   settings: AdvisorSettings,
   theme: Theme,
-  tui: RenderRequester
+  tui: RenderRequester,
+  jevSetupDeps?: JevSetupDeps,
+  onJevSetup?: (selection: JevSetupSelection) => boolean,
+  afterJevSetup?: () => void
 ): SettingItem[] => [
   {
     currentValue: settingValue(settings.jevFilterEnabled, false),
     description:
-      "Screen low-stakes ask_advisor consultations with Jev; guided setup verifies credentials.",
+      "Screen low-stakes ask_advisor consultations with Jev/Decisions; guided setup verifies credentials.",
     id: "jevFilter",
-    label: "Jev consultation filter",
+    label: "Jev/Decisions consultation filter",
     submenu: (currentValue, done) =>
-      new JevSetupSubmenu({ currentValue, done, theme, tui }),
+      new JevSetupSubmenu({
+        afterSelection: afterJevSetup,
+        currentTransport: settings.jevTransport ?? DEFAULT_JEV_TRANSPORT,
+        currentValue,
+        done,
+        onSelection: onJevSetup,
+        setupDeps: jevSetupDeps,
+        theme,
+        tui,
+      }),
   },
   {
     currentValue: String(
@@ -170,7 +187,7 @@ const jevItems = (
       settings.jevPricePerMtok ?? DEFAULT_JEV_PRICE_PER_MTOK
     ),
     description:
-      "Assumed TypeSafe price per million input tokens for cost lines.",
+      "TypeSafe/OpenRouter estimated input price per million tokens; ignored for OpenAI Decisions, whose cost is unavailable.",
     id: "jevPricePerMtok",
     label: "Jev price/Mtok",
     values: numericValues(
@@ -187,7 +204,7 @@ const jevItems = (
     description:
       "Proactively consult the Advisor every N turns without a consultation (0 = off).",
     id: "jevTurnGateEveryTurns",
-    label: "Jev turn gate",
+    label: "Jev/Decisions turn gate",
     values: [
       "Off",
       "every 3 turns",
@@ -203,23 +220,11 @@ const jevItems = (
     description:
       "Jev confidence required before the turn gate interrupts with advice.",
     id: "jevTurnGateNoulThreshold",
-    label: "Jev turn-gate threshold",
+    label: "Jev/Decisions turn-gate threshold",
     values: numericValues(
       settings.jevTurnGateNoulThreshold ?? DEFAULT_JEV_TURN_GATE_NOUL_THRESHOLD,
       [0.6, 0.7, 0.8, 0.85, 0.9, 0.95]
     ),
-  },
-  {
-    currentValue: settings.jevTransport ?? DEFAULT_JEV_TRANSPORT,
-    description:
-      "How Jev calls travel: auto reuses an OpenRouter login when no TypeSafe key is set.",
-    id: "jevTransport",
-    label: "Jev transport",
-    values: withCurrentValue(settings.jevTransport ?? DEFAULT_JEV_TRANSPORT, [
-      "auto",
-      "typesafe",
-      "openrouter",
-    ]),
   },
 ];
 
@@ -290,6 +295,9 @@ export const createSettingsItems = ({
   modelWhitelist,
   presets,
   settings,
+  afterJevSetup,
+  jevSetupDeps,
+  onJevSetup,
   theme,
   tui,
 }: SettingsItemsOptions): SettingItem[] => {
@@ -591,7 +599,7 @@ export const createSettingsItems = ({
       settings.outcomeLogging,
       false
     ),
-    ...jevItems(settings, theme, tui)
+    ...jevItems(settings, theme, tui, jevSetupDeps, onJevSetup, afterJevSetup)
   );
   return items;
 };

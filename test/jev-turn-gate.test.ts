@@ -21,6 +21,11 @@ import { asExtensionContext } from "./helpers/extension-context.ts";
 import { branchFromLines, systemOneMock } from "./helpers/jev-mock.ts";
 
 const credentials = { apiKey: "tsk-test", transport: "typesafe" as const };
+const openAiCredentials = () =>
+  Promise.resolve({
+    apiKey: "openai-platform-key",
+    transport: "openai-decisions" as const,
+  });
 
 const deferred = <Value>() => {
   let resolvePromise: ((value: Value) => void) | undefined;
@@ -35,6 +40,12 @@ const deferred = <Value>() => {
 
 const noulResponse = (noul: number) => ({
   answers: { should_consult: { noul, type: "noul" } },
+  usage: { input_tokens: 800, output_tokens: 0 },
+});
+
+const decisionsPredicateResponse = (probability: number) => ({
+  answers: [{ name: "should_consult", probability, type: "predicate" }],
+  model: "gpt-6-luna",
   usage: { input_tokens: 800, output_tokens: 0 },
 });
 
@@ -125,6 +136,46 @@ describe("handleJevTurnEnd", () => {
       "advisor-turn-gate-call",
       "advisor-turn-gate-result",
     ]);
+  });
+
+  test("applies the configured threshold to Decisions and fail-opens refusal", async () => {
+    const confidentMock = systemOneMock([decisionsPredicateResponse(0.8)]);
+    const confident = harness(confidentMock.fetch);
+    confident.registration.deps = {
+      fetch: confidentMock.fetch,
+      resolveTransport: openAiCredentials,
+    };
+    await turn(confident);
+    await turn(confident);
+    expect(confident.consultCount()).toBe(1);
+
+    const uncertainMock = systemOneMock([decisionsPredicateResponse(0.79)]);
+    const uncertain = harness(uncertainMock.fetch);
+    uncertain.registration.deps = {
+      fetch: uncertainMock.fetch,
+      resolveTransport: openAiCredentials,
+    };
+    await turn(uncertain);
+    await turn(uncertain);
+    expect(uncertain.consultCount()).toBe(0);
+
+    const refusedMock = systemOneMock([
+      {
+        answers: [{ name: "should_consult", type: "refusal" }],
+        usage: { input_tokens: 800, output_tokens: 0 },
+      },
+    ]);
+    const refused = harness(refusedMock.fetch);
+    refused.registration.deps = {
+      fetch: refusedMock.fetch,
+      resolveTransport: openAiCredentials,
+    };
+    const notifications: string[] = [];
+    const ctx = ctxWith(notifications);
+    await turn(refused, ctx);
+    await turn(refused, ctx);
+    expect(refused.consultCount()).toBe(0);
+    expect(notifications[0]).toContain("(malformed)");
   });
 
   test("a confident-true verdict runs a consultation that consumes budget", async () => {

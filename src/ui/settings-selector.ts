@@ -17,6 +17,7 @@ import type {
   AdvisorSettings,
   AdvisorSettingsSelectorOptions,
   ContextPreset,
+  JevSetupSelection,
 } from "./types.ts";
 
 export class AdvisorSettingsSelector implements Component, Focusable {
@@ -112,9 +113,15 @@ export class AdvisorSettingsSelector implements Component, Focusable {
       this.options.tui
     );
     const items = createSettingsItems({
+      afterJevSetup: () => {
+        this.settingsList = this.createSettingsList("jevFilter");
+        this.options.tui.requestRender();
+      },
       effortLevels: this.options.effortLevels,
       fallbackModel,
+      jevSetupDeps: this.options.jevSetupDeps,
       modelWhitelist,
+      onJevSetup: (selection) => this.applyJevSetup(selection),
       presets: this.presets,
       settings: this.settings,
       theme: this.options.theme,
@@ -133,6 +140,28 @@ export class AdvisorSettingsSelector implements Component, Focusable {
       adapter.setSelectedId(items, selectedId);
     }
     return adapter;
+  }
+
+  private applyJevSetup(selection: JevSetupSelection): boolean {
+    const updated: AdvisorSettings = {
+      ...this.settings,
+      jevFilterEnabled: selection.enabled,
+      jevTransport: selection.transport,
+      showUsageDetails: this.settings.showUsageDetails ?? true,
+      toolPolicies: { ...this.settings.toolPolicies },
+    };
+    try {
+      const result = this.options.onJevSetup
+        ? this.options.onJevSetup(selection, updated)
+        : (this.options.onChange ?? this.options.onSave)?.(updated);
+      if (result === false) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+    Object.assign(this.settings, updated);
+    return true;
   }
 
   private startSimpleModeGradient(): void {

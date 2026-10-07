@@ -187,9 +187,39 @@ describe("Jev session state", () => {
     });
     const summary = state.summary(undefined) ?? "";
     expect(summary).toContain(
-      "Jev filter: 3 screened (1 allowed, 2 skipped [1 repeat]), 1 override, 1 failure"
+      "Jev/Decisions filter: 3 screened (1 allowed, 2 skipped [1 repeat]), 1 override, 1 failure"
     );
-    expect(summary).toContain("Jev cost: ↑20k tokens · $0.0010");
+    expect(summary).toContain("Jev/Decisions cost: ↑20k tokens · $0.0010");
+  });
+
+  test("keeps mixed-provider filter cost unavailable while retaining known estimates", () => {
+    const state = new AdvisorSessionState();
+    state.recordJevFilterAllowed();
+    state.recordJevFilterUsage({
+      cost: 0.0001,
+      inputTokens: 100,
+      outputTokens: 0,
+    });
+    state.recordJevFilterUsage({ inputTokens: 200, outputTokens: 0 });
+    const summary = state.summary(undefined) ?? "";
+    expect(summary).toContain(
+      "cost unavailable (known-provider estimates $0.0001; Decisions billing unconfirmed)"
+    );
+    expect(summary).not.toContain("Jev/Decisions cost: ↑300 tokens · $0.0001");
+  });
+
+  test("keeps mixed-provider turn-gate cost unavailable", () => {
+    const state = new AdvisorSessionState();
+    state.recordJevGateCheck({
+      cost: 0.0004,
+      inputTokens: 100,
+      outputTokens: 0,
+    });
+    state.recordJevGateCheck({ inputTokens: 200, outputTokens: 0 });
+    const summary = state.summary(undefined) ?? "";
+    expect(summary).toContain(
+      "Jev/Decisions ↑300 · cost unavailable (known-provider estimates $0.0004; Decisions billing unconfirmed)"
+    );
   });
 
   test("estimates the saving from skips as an upper bound", () => {
@@ -245,7 +275,7 @@ describe("Jev session state", () => {
     expect(summary).toContain(
       "Consultation dedup: 2 repeat questions skipped, earlier advice reattached"
     );
-    expect(summary).not.toContain("Jev filter:");
+    expect(summary).not.toContain("Jev/Decisions filter:");
     expect(summary).toContain("Estimated saving from skips: unavailable");
   });
 
@@ -266,7 +296,7 @@ describe("Jev session state", () => {
     });
     const summary = state.summary(undefined) ?? "";
     expect(summary).toContain(
-      "Turn gate: 1 check (Jev ↑9.0k · $0.0004), 1 consultation ($0.0810)"
+      "Turn gate: 1 check (Jev/Decisions ↑9.0k · $0.0004), 1 consultation ($0.0810)"
     );
   });
 });

@@ -21,6 +21,11 @@ import {
 import { saveConfig } from "../src/config/storage.ts";
 import { validateConfig } from "../src/config/validation.ts";
 import { AdvisorSettingsSelector } from "../src/ui.ts";
+import type {
+  AdvisorSettings,
+  JevSetupDeps,
+  JevSetupSelection,
+} from "../src/ui/types.ts";
 import {
   agentDir,
   savedConfig,
@@ -33,7 +38,16 @@ import { plainThemeMock } from "./helpers/theme.ts";
 
 initTheme();
 
-const openSelector = (initial: any = {}) => {
+const openSelector = (
+  initial: any = {},
+  options: {
+    jevSetupDeps?: JevSetupDeps;
+    onJevSetup?: (
+      selection: JevSetupSelection,
+      settings: AdvisorSettings
+    ) => boolean;
+  } = {}
+) => {
   const saved: any[] = [];
   const selector = new AdvisorSettingsSelector({
     effortLevels: ["Default (Model Default)", "low", "high"],
@@ -46,8 +60,10 @@ const openSelector = (initial: any = {}) => {
       planGate: true,
       ...initial,
     },
+    jevSetupDeps: options.jevSetupDeps,
     onCancel: () => {},
     onChange: (value: any) => saved.push(value),
+    onJevSetup: options.onJevSetup,
     presets: [
       { description: "none", label: "0", value: 0 },
       { description: "15k", label: "15k", value: 15_000 },
@@ -78,14 +94,16 @@ const INVALID_SETTINGS: [Record<string, JsonValue>, RegExp][] = [
 
 const focusJevFilterRow = (selector: any) => {
   for (let presses = 0; presses < 60; presses += 1) {
-    if (plainScreen(selector).includes("→ Jev consultation filter")) {
+    if (plainScreen(selector).includes("→ Jev/Decisions consultation filter")) {
       selector.handleInput("\r");
       return;
     }
     selector.handleInput("\u001B[B");
   }
-  throw new Error("Jev consultation filter row not reachable");
+  throw new Error("Jev/Decisions consultation filter row not reachable");
 };
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("Jev shared settings", () => {
   test("default to safe values and validate their types", async () => {
@@ -108,6 +126,9 @@ describe("Jev shared settings", () => {
       expect(validateConfig({ advisorJevDigestMaxChars: 0 })).toBe(true);
       expect(validateConfig({ advisorJevPricePerMtok: 0.042 })).toBe(true);
       expect(validateConfig({ advisorJevTransport: "openrouter" })).toBe(true);
+      expect(validateConfig({ advisorJevTransport: "openai-decisions" })).toBe(
+        true
+      );
       expect(validateConfig({ advisorJevFilterSkipConfidence: 0.7 })).toBe(
         true
       );
@@ -120,6 +141,22 @@ describe("Jev shared settings", () => {
       for (const [invalid, pattern] of INVALID_SETTINGS) {
         expect(() => validateConfig(invalid)).toThrow(pattern);
       }
+    });
+  });
+
+  test("loads and persists the OpenAI Decisions transport", async () => {
+    await withAgentDir({ advisorJevTransport: "openai-decisions" }, () => {
+      const ctx = asExtensionContext({
+        cwd: "/",
+        isProjectTrusted: () => false,
+      });
+      loadConfig(ctx);
+      expect(advisorJevTransportRef).toBe("openai-decisions");
+      setAdvisorJevTransportRef("openai-decisions");
+      saveConfig(ctx);
+      expect(savedConfig(agentDir()).advisorJevTransport).toBe(
+        "openai-decisions"
+      );
     });
   });
 
@@ -211,20 +248,94 @@ describe("Jev shared settings", () => {
     expect(saved.at(-1)).toMatchObject({ jevFilterNoulMargin: 0.4 });
     changeSetting(selector, "Jev override window");
     expect(saved.at(-1)).toMatchObject({ jevFilterOverrideWindow: 20 });
-    changeSetting(selector, "Jev turn gate");
+    changeSetting(selector, "Jev/Decisions turn gate");
     expect(saved.at(-1)).toMatchObject({ jevTurnGateEveryTurns: 3 });
-    changeSetting(selector, "Jev turn-gate threshold");
+    changeSetting(selector, "Jev/Decisions turn-gate threshold");
     expect(saved.at(-1)).toMatchObject({ jevTurnGateNoulThreshold: 0.85 });
-    changeSetting(selector, "Jev transport");
-    expect(saved.at(-1)).toMatchObject({ jevTransport: "typesafe" });
-    expect(plainScreen(selector)).toContain("typesafe");
+    expect(plainScreen(selector)).not.toContain("Jev transport");
     selector.dispose();
   });
 
-  test("the Jev consultation filter row opens the guided setup submenu", () => {
+  test("the Jev setup selection sends both fields and commits local state only on save", async () => {
+    const selections: JevSetupSelection[] = [];
+    const candidates: AdvisorSettings[] = [];
+    const { selector } = openSelector(
+      { jevFilterEnabled: false, jevTransport: "auto" },
+      {
+        jevSetupDeps: {
+          resolveTransport: (transport) =>
+            Promise.resolve({
+              apiKey: "verified-key",
+              transport: transport ?? "typesafe",
+            }),
+          verify: () => Promise.resolve({ ok: true }),
+        },
+        onJevSetup: (selection, settings) => {
+          selections.push(selection);
+          candidates.push(settings);
+          return true;
+        },
+      }
+    );
+    focusJevFilterRow(selector);
+    await settle();
+    // SAFETY: the setup component is the submenu installed for the focused filter row.
+    const submenu = (selector as any).settingsList.submenuComponent;
+    submenu.handleInput("\u001B[B");
+    submenu.handleInput("\u001B[B");
+    submenu.handleInput("\r");
+    await settle();
+
+    expect(selections).toEqual([
+      { enabled: true, transport: "openai-decisions" },
+    ]);
+    expect(candidates[0]).toMatchObject({
+      jevFilterEnabled: true,
+      jevTransport: "openai-decisions",
+    });
+    expect(plainScreen(selector)).toMatch(
+      /Jev\/Decisions consultation filter\s+On/u
+    );
+    selector.dispose();
+
+    const failed = openSelector(
+      { jevFilterEnabled: false, jevTransport: "auto" },
+      {
+        jevSetupDeps: {
+          resolveTransport: (transport) =>
+            Promise.resolve({
+              apiKey: "verified-key",
+              transport: transport ?? "typesafe",
+            }),
+          verify: () => Promise.resolve({ ok: true }),
+        },
+        onJevSetup: () => false,
+      }
+    );
+    focusJevFilterRow(failed.selector);
+    await settle();
+    // SAFETY: the setup component is the submenu installed for the focused filter row.
+    const failedSubmenu = (failed.selector as any).settingsList
+      .submenuComponent;
+    failedSubmenu.handleInput("\u001B[B");
+    failedSubmenu.handleInput("\u001B[B");
+    failedSubmenu.handleInput("\r");
+    await settle();
+    expect(plainScreen(failed.selector)).toContain(
+      "Provider verified, but settings could not be saved."
+    );
+    // SAFETY: the selector's local settings remain unchanged after the callback reports failure.
+    expect((failed.selector as any).settings).toMatchObject({
+      jevFilterEnabled: false,
+      jevTransport: "auto",
+    });
+    failed.selector.dispose();
+  });
+
+  test("the Jev/Decisions consultation filter row opens the guided setup submenu", () => {
     const { saved, selector } = openSelector();
     const screenText = plainScreen(selector);
-    expect(screenText).not.toContain("Jev consultation filter");
+    expect(screenText).not.toContain("Jev/Decisions consultation filter");
     focusJevFilterRow(selector);
     // SAFETY: settingsList.submenuComponent is the live submenu the selector installed on open.
     const submenu = (selector as any).settingsList.submenuComponent;

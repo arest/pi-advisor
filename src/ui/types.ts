@@ -1,8 +1,10 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { KeybindingsManager, TUI } from "@earendil-works/pi-tui";
 
-import type { GateFailureMode } from "../config/types.ts";
+import type { GateFailureMode, JevTransport } from "../config/types.ts";
 import type { GitContextLevel } from "../git.ts";
+import type { JevKeyStoreResult } from "../jev/key-store.ts";
+import type { JevCredentials, JevTransportKind } from "../jev/transport.ts";
 
 export interface RenderRequester {
   requestRender: () => void;
@@ -93,7 +95,7 @@ export interface AdvisorSettings {
   jevModel?: string;
   jevPricePerMtok?: number;
   jevTimeoutMs?: number;
-  jevTransport?: "auto" | "typesafe" | "openrouter";
+  jevTransport?: "auto" | "typesafe" | "openrouter" | "openai-decisions";
   jevTurnGateEveryTurns?: number;
   jevTurnGateNoulThreshold?: number;
   loopThreshold?: number;
@@ -115,6 +117,29 @@ export interface AdvisorSettings {
   untrackedContent?: boolean;
 }
 
+export interface JevSetupSelection {
+  enabled: boolean;
+  transport: JevTransport;
+}
+
+export interface JevSetupResult {
+  message?: string;
+  ok: boolean;
+}
+
+export interface JevSetupDeps {
+  clearStoredKey?: (transport: JevTransportKind) => Promise<JevKeyStoreResult>;
+  removePlaintextKey?: () => JevKeyStoreResult;
+  resolveTransport?: (
+    transport?: JevTransportKind
+  ) => Promise<JevCredentials | undefined>;
+  verify?: (credentials: JevCredentials) => Promise<JevSetupResult>;
+  writeKey?: (
+    key: string,
+    transport: JevTransportKind
+  ) => Promise<JevKeyStoreResult>;
+}
+
 export interface AdvisorSettingsSelectorOptions {
   effortLevels: string[];
   initial: AdvisorSettings;
@@ -125,6 +150,11 @@ export interface AdvisorSettingsSelectorOptions {
   /** @deprecated Use onChange; retained for extensions embedding this component. */
   onSave?: (settings: AdvisorSettings) => void;
   presets: ContextPreset[];
+  jevSetupDeps?: JevSetupDeps;
+  onJevSetup?: (
+    selection: JevSetupSelection,
+    settings: AdvisorSettings
+  ) => boolean;
   theme: Theme;
   tui: RenderRequester;
 }

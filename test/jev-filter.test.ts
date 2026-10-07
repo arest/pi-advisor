@@ -16,11 +16,18 @@ import { asExtensionContext } from "./helpers/extension-context.ts";
 import { branchFromLines, systemOneMock } from "./helpers/jev-mock.ts";
 
 const credentials = { apiKey: "tsk-test", transport: "typesafe" as const };
+const openAiTransport = () =>
+  Promise.resolve({
+    apiKey: "openai-platform-key",
+    transport: "openai-decisions" as const,
+  });
 
 const summaryLine = (session: AdvisorSessionState) => {
   const summary = session.summary(undefined) ?? "";
   return (
-    summary.split("\n").find((line) => line.startsWith("Jev filter:")) ?? ""
+    summary
+      .split("\n")
+      .find((line) => line.startsWith("Jev/Decisions filter:")) ?? ""
   );
 };
 
@@ -52,6 +59,32 @@ const verdictResponse = (p0: number, noul: number) => ({
       type: "score",
     },
   },
+  usage: { input_tokens: 900, output_tokens: 0 },
+});
+
+const decisionsVerdictResponse = (
+  negligible: number,
+  selfAnswerable: number
+) => ({
+  answers: [
+    {
+      name: "self_answerable",
+      probability: selfAnswerable,
+      type: "predicate",
+    },
+    {
+      confidence: 0.9,
+      name: "stakes",
+      probabilities: [
+        { label: "Negligible", probability: negligible, value: 0 },
+        { label: "Moderate", probability: (1 - negligible) / 2, value: 1 },
+        { label: "High", probability: (1 - negligible) / 2, value: 2 },
+      ],
+      score: 1 - negligible,
+      type: "score",
+    },
+  ],
+  model: "gpt-6-luna",
   usage: { input_tokens: 900, output_tokens: 0 },
 });
 
@@ -115,7 +148,7 @@ describe("screenConsultation", () => {
     expect(summary).toContain(
       "Consultation dedup: 1 repeat question skipped, earlier advice reattached"
     );
-    expect(summary).not.toContain("Jev filter:");
+    expect(summary).not.toContain("Jev/Decisions filter:");
     expect(summary).not.toContain("Jev cost");
   });
 
@@ -173,6 +206,86 @@ describe("screenConsultation", () => {
     }
   });
 
+  test("applies the local conjunction to Decisions and fails open on uncertainty or errors", async () => {
+    const screened = await screenConsultation(
+      ctxWith(),
+      new AdvisorSessionState(),
+      { question: "Which import order?" },
+      {
+        fetch: systemOneMock([decisionsVerdictResponse(0.95, 0.9)]).fetch,
+        resolveTransport: openAiTransport,
+      }
+    );
+    expect(screened.decision).toBe("skip");
+
+    const uncertain = await screenConsultation(
+      ctxWith(),
+      new AdvisorSessionState(),
+      { question: "Should I proceed?" },
+      {
+        fetch: systemOneMock([decisionsVerdictResponse(0.95, 0.84)]).fetch,
+        resolveTransport: openAiTransport,
+      }
+    );
+    expect(uncertain).toEqual({ decision: "allow" });
+
+    const malformed = await screenConsultation(
+      ctxWith(),
+      new AdvisorSessionState(),
+      { question: "Should I proceed?" },
+      {
+        fetch: systemOneMock([
+          {
+            answers: [
+              {
+                name: "self_answerable",
+                probability: 0.99,
+                type: "predicate",
+              },
+            ],
+            usage: { input_tokens: 10, output_tokens: 0 },
+          },
+        ]).fetch,
+        resolveTransport: openAiTransport,
+      }
+    );
+    expect(malformed).toEqual({ decision: "allow" });
+
+    const unauthorized = await screenConsultation(
+      ctxWith(),
+      new AdvisorSessionState(),
+      { question: "Should I proceed?" },
+      {
+        fetch: systemOneMock([
+          { body: { error: "invalid api key" }, status: 401 },
+        ]).fetch,
+        resolveTransport: openAiTransport,
+      }
+    );
+    expect(unauthorized).toEqual({ decision: "allow" });
+  });
+
+  test("records Decisions tokens while showing unavailable endpoint cost", async () => {
+    const session = new AdvisorSessionState();
+    const outcome = await screenConsultation(
+      ctxWith(),
+      session,
+      { question: "Which import order?" },
+      {
+        fetch: systemOneMock([decisionsVerdictResponse(0.95, 0.9)]).fetch,
+        resolveTransport: () =>
+          Promise.resolve({
+            apiKey: "openai-platform-key",
+            transport: "openai-decisions" as const,
+          }),
+      }
+    );
+    expect(outcome.decision).toBe("skip");
+    expect(session.summary(undefined)).toContain(
+      "Jev/Decisions cost: ↑900 tokens · cost unavailable (Decisions billing unconfirmed)"
+    );
+  });
+
   test("records ledger counts and Jev spend on the session", async () => {
     const session = new AdvisorSessionState();
     const mock = systemOneMock([
@@ -198,8 +311,10 @@ describe("screenConsultation", () => {
       }
     );
     const summary = session.summary(undefined);
-    expect(summary).toContain("Jev filter: 2 screened (1 allowed, 1 skipped)");
-    expect(summary).toContain("Jev cost: ↑1.8k tokens · $0.0001");
+    expect(summary).toContain(
+      "Jev/Decisions filter: 2 screened (1 allowed, 1 skipped)"
+    );
+    expect(summary).toContain("Jev/Decisions cost: ↑1.8k tokens · $0.0001");
   });
 
   test("missing credentials allow with one missing-key notification", async () => {
