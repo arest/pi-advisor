@@ -546,6 +546,9 @@ describe("Advisor consultation request construction", () => {
       expect(() =>
         beforeAgentStart({ systemPromptOptions: {} }, ctx)
       ).not.toThrow();
+      expect(() =>
+        beforeAgentStart({ systemPromptOptions: null }, ctx)
+      ).not.toThrow();
     });
   });
 
