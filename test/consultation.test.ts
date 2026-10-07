@@ -524,6 +524,31 @@ describe("Advisor consultation request construction", () => {
     );
   });
 
+  test("ignores missing system prompt options", async () => {
+    await withAgentDir({}, () => {
+      let beforeAgentStart: any;
+      registerExtension(
+        mockPi(
+          { activeTools: ["ask_advisor"] },
+          {
+            on(event: string, handler: any) {
+              if (event === "before_agent_start") {
+                beforeAgentStart = handler;
+              }
+            },
+            registerTool: () => {},
+          }
+        )
+      );
+      const ctx = { cwd: tmpdir(), isProjectTrusted: () => false };
+
+      expect(() => beforeAgentStart({}, ctx)).not.toThrow();
+      expect(() =>
+        beforeAgentStart({ systemPromptOptions: {} }, ctx)
+      ).not.toThrow();
+    });
+  });
+
   test("removes the invocation rules when ask_advisor is inactive", async () => {
     await withAgentDir({ advisorFailureGate: true }, () => {
       let beforeAgentStart: any;

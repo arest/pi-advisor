@@ -72,7 +72,11 @@ export const registerToolLifecycle = ({
   });
 
   pi.on("before_agent_start", (event, ctx) => {
-    const { sections } = event.systemPromptOptions;
+    // Hosts may omit systemPromptOptions; don't crash the extension on it.
+    const sections = event.systemPromptOptions?.sections;
+    if (!sections) {
+      return;
+    }
     delete sections.advisor_invocation_settings;
     if (!pi.getActiveTools().includes("ask_advisor")) {
       return;
