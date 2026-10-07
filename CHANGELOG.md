@@ -6,13 +6,15 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## Unreleased
 
-### Changed
-
-- Updated development dependencies: Pi packages to 1.0.4, Oxlint and plugins to 1.87.0, Knip to 6.40.0, Oxfmt to 0.72.0, TypeBox to 1.3.36, and Ultracite to 7.12.4.
+## 0.12.0 - 2026-10-07
 
 ### Added
 
 - Added OpenAI Decisions as an optional, explicitly selected Jev/Decisions screening provider, with live-verified setup and secure Platform API-key storage; the existing `auto` TypeSafe → OpenRouter behavior remains unchanged.
+
+### Changed
+
+- Updated development dependencies: Pi packages to 1.0.4, Oxlint and plugins to 1.87.0, Knip to 6.40.0, Oxfmt to 0.72.0, TypeBox to 1.3.36, and Ultracite to 7.12.4.
 
 ## 0.11.2 - 2026-10-07
 
