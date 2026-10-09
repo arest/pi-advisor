@@ -97,17 +97,6 @@ export const providerName = (transport: JevTransportKind): string => {
   return `OpenAI Decisions (${OPENAI_DECISIONS_MODEL})`;
 };
 
-export const endpointHost = (baseUrl: string | undefined): string => {
-  if (!baseUrl) {
-    return "no Base URL";
-  }
-  try {
-    return new URL(baseUrl).host;
-  } catch {
-    return baseUrl;
-  }
-};
-
 const endpointSourceLabel = (source: JevCredentials["source"]): string => {
   switch (source) {
     case "provider-credential": {
@@ -130,7 +119,7 @@ export const transportLabel = (credentials: JevCredentials): string => {
     return "OpenRouter (reusing Pi login)";
   }
   if (credentials.transport === "typesafe-compatible") {
-    return `System One–compatible (${endpointHost(credentials.baseUrl)}; key: ${endpointSourceLabel(credentials.source)})`;
+    return `System One–compatible (${credentials.baseUrl ?? "no Base URL"}; key: ${endpointSourceLabel(credentials.source)})`;
   }
   if (credentials.transport === "openai-decisions") {
     let source = "verified API key";

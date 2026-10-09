@@ -173,7 +173,7 @@ export interface ConfigKeySchema {
   persisted: boolean;
   /** JSON value type used for the base type check. */
   type: "string" | "boolean" | "number" | "enum" | "object" | "array";
-  /** Type beyond the JSON type, for enum and object keys. */
+  /** Type beyond the JSON type; honoured for every schema type, not only enum and object. */
   validate?: (value: unknown) => value is JsonValue;
 }
 

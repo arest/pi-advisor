@@ -67,9 +67,7 @@ const deleteDefaultFileStore = () => rmSync(keyFilePath(), { force: true });
 const messageOf = <Error>(error: Error) =>
   redactSecrets(error instanceof Error ? error.message : String(error));
 
-/** Resolves the endpoint key: Bun.secrets → JEV_API_KEY → the 0600 key file.
- * A stored key outranks a shell variable so a just-verified key is the one
- * actually used. advisor.json is never read. */
+/** Resolves the endpoint key: Bun.secrets → JEV_API_KEY → the 0600 key file. */
 export const resolveJevEndpointKey = async (
   deps: JevEndpointKeyStoreDeps = {}
 ): Promise<JevEndpointKeyResolution> => {

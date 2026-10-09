@@ -23,6 +23,7 @@ import type {
 import { MaskedInput } from "./masked-input.ts";
 import type { JevProviderSelection, JevSetupDeps } from "./types.ts";
 
+// Justified exception to the ~300-line guidance: one cohesive modal state machine.
 export class JevProviderSubmenu implements Component, Focusable {
   private readonly options: JevProviderSubmenuOptions;
   private readonly deps: Required<JevSetupDeps>;

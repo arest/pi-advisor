@@ -15,10 +15,9 @@ import {
   DEFAULT_SCOUT_TIMEOUT_MS,
 } from "../config/types.ts";
 import { isValidAdvisorToolPolicies } from "../config/validation.ts";
-import { OPENAI_DECISIONS_MODEL } from "../jev/decisions-client.ts";
 import { JevFilterSubmenu } from "./jev-filter-submenu.ts";
 import { JevProviderSubmenu } from "./jev-provider-submenu.ts";
-import { endpointHost, providerName } from "./jev-setup-support.ts";
+import { providerName } from "./jev-setup-support.ts";
 import { SearchableModelMultiSelector } from "./model-multi-selector.ts";
 import { SearchableModelSelector } from "./model-selector.ts";
 import {
@@ -91,13 +90,10 @@ const jevProviderLabel = (settings: AdvisorSettings): string => {
     return "Auto (TypeSafe → OpenRouter)";
   }
   if (transport === "typesafe-compatible") {
-    const host = endpointHost(settings.jevBaseUrl);
+    const baseUrl = settings.jevBaseUrl ?? "no Base URL";
     return settings.jevKeyProvider
-      ? `System One–compatible (${host}; Pi login "${settings.jevKeyProvider}")`
-      : `System One–compatible (${host})`;
-  }
-  if (transport === "openai-decisions") {
-    return `OpenAI Decisions (${OPENAI_DECISIONS_MODEL})`;
+      ? `System One–compatible (${baseUrl}; Pi login "${settings.jevKeyProvider}")`
+      : `System One–compatible (${baseUrl})`;
   }
   return providerName(transport);
 };

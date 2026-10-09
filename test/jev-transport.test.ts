@@ -66,21 +66,18 @@ describe("typesafe-compatible endpoint", () => {
     expect(lookups).toEqual(["vercel"]);
   });
 
-  test("falls back to the dedicated store when the named login is empty", async () => {
+  test("a declared Pi provider login never falls back to the stored endpoint key", async () => {
     setAdvisorJevTransportRef("typesafe-compatible");
     setAdvisorJevBaseUrlRef("https://api.codiv.ai");
     setAdvisorJevKeyProviderRef("vercel");
     const credentials = await resolveJevTransport(undefined, {
       getProviderKey: async () => undefined,
       resolveEndpointKey: async () => ({
-        key: "jv_live_key",
+        key: "stale-key",
         source: "jev-env",
       }),
     });
-    expect(credentials).toMatchObject({
-      apiKey: "jv_live_key",
-      transport: "typesafe-compatible",
-    });
+    expect(credentials).toBeUndefined();
   });
 
   test("resolves nothing without a configured Base URL", async () => {

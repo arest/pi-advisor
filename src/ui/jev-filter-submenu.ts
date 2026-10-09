@@ -33,8 +33,7 @@ const labelFor = (action: FilterAction): string => {
   return action === "disable" ? "Disable the filter" : "Done";
 };
 
-/** Owns only the on/off decision plus its credential gate; the provider itself
- * is chosen and verified in the Jev provider row. */
+/** Owns only the on/off decision plus its credential gate. */
 export class JevFilterSubmenu implements Component, Focusable {
   private readonly options: JevFilterSubmenuOptions;
   private readonly deps: Required<JevSetupDeps>;

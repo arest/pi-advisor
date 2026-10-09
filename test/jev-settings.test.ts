@@ -30,6 +30,7 @@ import type {
   JevFilterSelection,
   JevProviderSelection,
   JevSetupDeps,
+  JevSetupSelection,
 } from "../src/ui/types.ts";
 import {
   agentDir,
@@ -55,6 +56,10 @@ const openSelector = (
       selection: JevProviderSelection,
       settings: AdvisorSettings
     ) => boolean;
+    onJevSetup?: (
+      selection: JevSetupSelection,
+      settings: AdvisorSettings
+    ) => boolean;
   } = {}
 ) => {
   const saved: any[] = [];
@@ -74,6 +79,7 @@ const openSelector = (
     onChange: (value: any) => saved.push(value),
     onJevFilter: options.onJevFilter,
     onJevProvider: options.onJevProvider,
+    onJevSetup: options.onJevSetup,
     presets: [
       { description: "none", label: "0", value: 0 },
       { description: "15k", label: "15k", value: 15_000 },
@@ -481,6 +487,28 @@ describe("Jev shared settings", () => {
     expect((selector as any).settings).toMatchObject({
       jevFilterEnabled: false,
     });
+    selector.dispose();
+  });
+
+  test("the deprecated onJevSetup callback still receives the provider row", async () => {
+    const selections: JevSetupSelection[] = [];
+    const { selector } = openSelector(
+      { jevFilterEnabled: false, jevTransport: "auto" },
+      {
+        jevSetupDeps: verifiedDeps(),
+        onJevSetup: (selection) => {
+          selections.push(selection);
+          return true;
+        },
+      }
+    );
+    focusJevProviderRow(selector);
+    await settle();
+    // SAFETY: the setup component is the submenu installed for the focused provider row.
+    const submenu = (selector as any).settingsList.submenuComponent;
+    submenu.handleInput("\r");
+    await settle();
+    expect(selections).toEqual([{ enabled: false, transport: "typesafe" }]);
     selector.dispose();
   });
 

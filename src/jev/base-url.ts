@@ -29,8 +29,7 @@ const stripContractPath = (pathname: string): string => {
   return path.replace(/\/+$/u, "");
 };
 
-/** Accepts an origin or any spelling that already carries /v1 or the contract
- * path, and returns the origin plus path prefix with neither. */
+/** Returns the origin plus path prefix of any accepted Base URL spelling. */
 export const normalizeJevBaseUrl = (input: string): JevBaseUrlResult => {
   const trimmed = input.trim();
   if (!trimmed) {

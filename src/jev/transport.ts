@@ -35,6 +35,11 @@ export interface JevCredentials {
   transport: JevTransportKind;
 }
 
+export interface JevEndpointTarget {
+  baseUrl: string;
+  keyProvider?: string;
+}
+
 export interface JevProviderAuthResult {
   auth: { apiKey?: string };
   source?: string;
@@ -129,12 +134,12 @@ const typeSafeCredentials = async (
 };
 
 export const resolveTypesafeCompatibleCredentials = async (
-  options: { baseUrl: string; keyProvider?: string },
+  target: JevEndpointTarget,
   ctx?: ExtensionContext,
   deps: JevTransportDeps = {}
 ): Promise<JevCredentials | undefined> => {
-  const { baseUrl } = options;
-  const provider = options.keyProvider;
+  const { baseUrl } = target;
+  const provider = target.keyProvider;
   if (provider) {
     let providerKey: string | undefined;
     try {
@@ -145,14 +150,16 @@ export const resolveTypesafeCompatibleCredentials = async (
       providerKey = undefined;
     }
     const trimmed = providerKey?.trim();
-    if (trimmed) {
-      return {
-        apiKey: trimmed,
-        baseUrl,
-        source: "provider-credential",
-        transport: "typesafe-compatible",
-      };
+    if (!trimmed) {
+      // A declared Pi login wins outright; a stale store key must never stand in.
+      return undefined;
     }
+    return {
+      apiKey: trimmed,
+      baseUrl,
+      source: "provider-credential",
+      transport: "typesafe-compatible",
+    };
   }
   const resolution = await (deps.resolveEndpointKey ?? resolveJevEndpointKey)();
   if (!resolution.key) {
@@ -205,8 +212,7 @@ export const resolveJevTransportFor = async (
   return openAiPlatformCredentials(ctx, deps);
 };
 
-/** Resolves `auto` as TypeSafe then OpenRouter; explicit choices never fall
- * back, and the System One–compatible endpoint is never chosen implicitly. */
+/** Resolves `auto` as TypeSafe then OpenRouter; explicit choices never fall back. */
 export const resolveJevTransport = async (
   ctx?: ExtensionContext,
   deps: JevTransportDeps = {}

@@ -2,6 +2,7 @@ import { getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { SettingsList, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 
+import { DEFAULT_JEV_TRANSPORT } from "../config/types.ts";
 import {
   rainbowGradient,
   SIMPLE_MODE_GRADIENT_INTERVAL_MS,
@@ -169,30 +170,56 @@ export class AdvisorSettingsSelector implements Component, Focusable {
   }
 
   private applyJevFilter(selection: JevFilterSelection): boolean {
-    return this.applyJevSelection(
-      { jevFilterEnabled: selection.enabled },
-      this.options.onJevFilter
-        ? (settings) =>
-            (this.options.onJevFilter ?? (() => true))(selection, settings)
-        : undefined
-    );
+    const patch = { jevFilterEnabled: selection.enabled };
+    const handler = this.options.onJevFilter;
+    if (handler) {
+      return this.applyJevSelection(patch, (settings) =>
+        handler(selection, settings)
+      );
+    }
+    const legacy = this.options.onJevSetup;
+    if (legacy) {
+      return this.applyJevSelection(patch, (settings) =>
+        legacy(
+          {
+            enabled: selection.enabled,
+            transport: settings.jevTransport ?? DEFAULT_JEV_TRANSPORT,
+          },
+          settings
+        )
+      );
+    }
+    return this.applyJevSelection(patch);
   }
 
   private applyJevProvider(selection: JevProviderSelection): boolean {
     const custom = selection.transport === "typesafe-compatible";
-    return this.applyJevSelection(
-      {
-        jevBaseUrl: custom ? selection.baseUrl : this.settings.jevBaseUrl,
-        jevKeyProvider: custom
-          ? selection.keyProvider
-          : this.settings.jevKeyProvider,
-        jevTransport: selection.transport,
-      },
-      this.options.onJevProvider
-        ? (settings) =>
-            (this.options.onJevProvider ?? (() => true))(selection, settings)
-        : undefined
-    );
+    const patch = {
+      jevBaseUrl: custom ? selection.baseUrl : this.settings.jevBaseUrl,
+      jevKeyProvider: custom
+        ? selection.keyProvider
+        : this.settings.jevKeyProvider,
+      jevTransport: selection.transport,
+    };
+    const handler = this.options.onJevProvider;
+    if (handler) {
+      return this.applyJevSelection(patch, (settings) =>
+        handler(selection, settings)
+      );
+    }
+    const legacy = this.options.onJevSetup;
+    if (legacy) {
+      return this.applyJevSelection(patch, (settings) =>
+        legacy(
+          {
+            enabled: settings.jevFilterEnabled ?? false,
+            transport: selection.transport,
+          },
+          settings
+        )
+      );
+    }
+    return this.applyJevSelection(patch);
   }
 
   private startSimpleModeGradient(): void {

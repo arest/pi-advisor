@@ -6795,9 +6795,9 @@ var typeSafeCredentials = async (deps) => {
   }
   return credentials;
 };
-var resolveTypesafeCompatibleCredentials = async (options, ctx, deps = {}) => {
-  const { baseUrl } = options;
-  const provider = options.keyProvider;
+var resolveTypesafeCompatibleCredentials = async (target, ctx, deps = {}) => {
+  const { baseUrl } = target;
+  const provider = target.keyProvider;
   if (provider) {
     let providerKey;
     try {
@@ -6806,14 +6806,15 @@ var resolveTypesafeCompatibleCredentials = async (options, ctx, deps = {}) => {
       providerKey = undefined;
     }
     const trimmed = providerKey?.trim();
-    if (trimmed) {
-      return {
-        apiKey: trimmed,
-        baseUrl,
-        source: "provider-credential",
-        transport: "typesafe-compatible"
-      };
+    if (!trimmed) {
+      return;
     }
+    return {
+      apiKey: trimmed,
+      baseUrl,
+      source: "provider-credential",
+      transport: "typesafe-compatible"
+    };
   }
   const resolution = await (deps.resolveEndpointKey ?? resolveJevEndpointKey)();
   if (!resolution.key) {
@@ -8359,16 +8360,6 @@ var providerName = (transport) => {
   }
   return `OpenAI Decisions (${OPENAI_DECISIONS_MODEL})`;
 };
-var endpointHost = (baseUrl) => {
-  if (!baseUrl) {
-    return "no Base URL";
-  }
-  try {
-    return new URL(baseUrl).host;
-  } catch {
-    return baseUrl;
-  }
-};
 var endpointSourceLabel = (source) => {
   switch (source) {
     case "provider-credential": {
@@ -8390,7 +8381,7 @@ var transportLabel = (credentials) => {
     return "OpenRouter (reusing Pi login)";
   }
   if (credentials.transport === "typesafe-compatible") {
-    return `System One–compatible (${endpointHost(credentials.baseUrl)}; key: ${endpointSourceLabel(credentials.source)})`;
+    return `System One–compatible (${credentials.baseUrl ?? "no Base URL"}; key: ${endpointSourceLabel(credentials.source)})`;
   }
   if (credentials.transport === "openai-decisions") {
     let source = "verified API key";
@@ -9199,11 +9190,8 @@ var jevProviderLabel = (settings) => {
     return "Auto (TypeSafe → OpenRouter)";
   }
   if (transport === "typesafe-compatible") {
-    const host = endpointHost(settings.jevBaseUrl);
-    return settings.jevKeyProvider ? `System One–compatible (${host}; Pi login "${settings.jevKeyProvider}")` : `System One–compatible (${host})`;
-  }
-  if (transport === "openai-decisions") {
-    return `OpenAI Decisions (${OPENAI_DECISIONS_MODEL})`;
+    const baseUrl = settings.jevBaseUrl ?? "no Base URL";
+    return settings.jevKeyProvider ? `System One–compatible (${baseUrl}; Pi login "${settings.jevKeyProvider}")` : `System One–compatible (${baseUrl})`;
   }
   return providerName(transport);
 };
@@ -9842,15 +9830,39 @@ class AdvisorSettingsSelector {
     return true;
   }
   applyJevFilter(selection) {
-    return this.applyJevSelection({ jevFilterEnabled: selection.enabled }, this.options.onJevFilter ? (settings) => (this.options.onJevFilter ?? (() => true))(selection, settings) : undefined);
+    const patch = { jevFilterEnabled: selection.enabled };
+    const handler = this.options.onJevFilter;
+    if (handler) {
+      return this.applyJevSelection(patch, (settings) => handler(selection, settings));
+    }
+    const legacy = this.options.onJevSetup;
+    if (legacy) {
+      return this.applyJevSelection(patch, (settings) => legacy({
+        enabled: selection.enabled,
+        transport: settings.jevTransport ?? DEFAULT_JEV_TRANSPORT
+      }, settings));
+    }
+    return this.applyJevSelection(patch);
   }
   applyJevProvider(selection) {
     const custom = selection.transport === "typesafe-compatible";
-    return this.applyJevSelection({
+    const patch = {
       jevBaseUrl: custom ? selection.baseUrl : this.settings.jevBaseUrl,
       jevKeyProvider: custom ? selection.keyProvider : this.settings.jevKeyProvider,
       jevTransport: selection.transport
-    }, this.options.onJevProvider ? (settings) => (this.options.onJevProvider ?? (() => true))(selection, settings) : undefined);
+    };
+    const handler = this.options.onJevProvider;
+    if (handler) {
+      return this.applyJevSelection(patch, (settings) => handler(selection, settings));
+    }
+    const legacy = this.options.onJevSetup;
+    if (legacy) {
+      return this.applyJevSelection(patch, (settings) => legacy({
+        enabled: settings.jevFilterEnabled ?? false,
+        transport: selection.transport
+      }, settings));
+    }
+    return this.applyJevSelection(patch);
   }
   startSimpleModeGradient() {
     this.stopSimpleModeGradient();

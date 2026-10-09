@@ -12,7 +12,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed
 
-- Jev/Decisions provider selection moved out of the consultation-filter row into its own row, so the provider can be configured and verified without enabling screening. The filter row now only switches the filter on and off, and it refuses to enable while no provider resolves.
+- Jev/Decisions provider selection moved out of the consultation-filter row into its own row, so the provider can be configured and verified without enabling screening. The filter row now only switches the filter on and off, and it refuses to enable while no provider resolves. `AdvisorSettingsSelectorOptions` gained `onJevFilter` and `onJevProvider` for the two rows; the combined `onJevSetup` is deprecated and is still called when neither is supplied.
 - Updated Pi development dependencies to 1.1.0 and refreshed transitive dependency versions.
 
 ## 0.12.0 - 2026-10-07

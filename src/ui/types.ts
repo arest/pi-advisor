@@ -4,7 +4,11 @@ import type { KeybindingsManager, TUI } from "@earendil-works/pi-tui";
 import type { GateFailureMode, JevTransport } from "../config/types.ts";
 import type { GitContextLevel } from "../git.ts";
 import type { JevKeyStoreResult } from "../jev/key-store.ts";
-import type { JevCredentials, JevTransportKind } from "../jev/transport.ts";
+import type {
+  JevCredentials,
+  JevEndpointTarget,
+  JevTransportKind,
+} from "../jev/transport.ts";
 
 export interface RenderRequester {
   requestRender: () => void;
@@ -119,6 +123,12 @@ export interface AdvisorSettings {
   untrackedContent?: boolean;
 }
 
+/** @deprecated Split into JevFilterSelection and JevProviderSelection, which save separately. */
+export interface JevSetupSelection {
+  enabled: boolean;
+  transport: JevTransport;
+}
+
 export interface JevFilterSelection {
   enabled: boolean;
 }
@@ -137,10 +147,9 @@ export interface JevSetupResult {
 export interface JevSetupDeps {
   clearStoredKey?: (transport: JevTransportKind) => Promise<JevKeyStoreResult>;
   removePlaintextKey?: () => JevKeyStoreResult;
-  resolveEndpoint?: (options: {
-    baseUrl: string;
-    keyProvider?: string;
-  }) => Promise<JevCredentials | undefined>;
+  resolveEndpoint?: (
+    target: JevEndpointTarget
+  ) => Promise<JevCredentials | undefined>;
   resolveTransport?: (
     transport?: JevTransportKind
   ) => Promise<JevCredentials | undefined>;
@@ -168,6 +177,11 @@ export interface AdvisorSettingsSelectorOptions {
   ) => boolean;
   onJevProvider?: (
     selection: JevProviderSelection,
+    settings: AdvisorSettings
+  ) => boolean;
+  /** @deprecated Use onJevFilter and onJevProvider; each is saved independently. */
+  onJevSetup?: (
+    selection: JevSetupSelection,
     settings: AdvisorSettings
   ) => boolean;
   theme: Theme;
