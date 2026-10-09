@@ -4,7 +4,7 @@ Pi extension providing an Executor/Advisor consultation flow, with an optional t
 
 ## Language
 
-**JEV transport**: The stored selection of how pi-advisor reaches a decision model, identified by the wire contract and the vendor route it belongs to. _Avoid_: provider, backend, domain
+**JEV transport**: The stored selection of how pi-advisor reaches a decision model, identified by the wire contract and the vendor route it belongs to. It is persisted as `advisorJevTransport` while the settings row is labelled "Jev provider": the provider is what the user chooses, the transport is what gets stored. _Avoid_: provider, backend, domain
 
 **JEV provider**: The concrete service chosen for screening and the turn gate, whether built into pi-advisor or supplied by the user. _Avoid_: transport, model, vendor
 
