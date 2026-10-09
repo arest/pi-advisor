@@ -87,15 +87,17 @@ export interface AdvisorSettings {
   gitContext?: GitContextLevel;
   gitContextMaxChars?: number;
   herdrIntegration?: boolean;
+  jevBaseUrl?: string;
   jevDigestMaxChars?: number;
   jevFilterEnabled?: boolean;
   jevFilterNoulMargin?: number;
   jevFilterOverrideWindow?: number;
   jevFilterSkipConfidence?: number;
+  jevKeyProvider?: string;
   jevModel?: string;
   jevPricePerMtok?: number;
   jevTimeoutMs?: number;
-  jevTransport?: "auto" | "typesafe" | "openrouter" | "openai-decisions";
+  jevTransport?: JevTransport;
   jevTurnGateEveryTurns?: number;
   jevTurnGateNoulThreshold?: number;
   loopThreshold?: number;
@@ -117,8 +119,13 @@ export interface AdvisorSettings {
   untrackedContent?: boolean;
 }
 
-export interface JevSetupSelection {
+export interface JevFilterSelection {
   enabled: boolean;
+}
+
+export interface JevProviderSelection {
+  baseUrl?: string;
+  keyProvider?: string;
   transport: JevTransport;
 }
 
@@ -130,6 +137,10 @@ export interface JevSetupResult {
 export interface JevSetupDeps {
   clearStoredKey?: (transport: JevTransportKind) => Promise<JevKeyStoreResult>;
   removePlaintextKey?: () => JevKeyStoreResult;
+  resolveEndpoint?: (options: {
+    baseUrl: string;
+    keyProvider?: string;
+  }) => Promise<JevCredentials | undefined>;
   resolveTransport?: (
     transport?: JevTransportKind
   ) => Promise<JevCredentials | undefined>;
@@ -151,8 +162,12 @@ export interface AdvisorSettingsSelectorOptions {
   onSave?: (settings: AdvisorSettings) => void;
   presets: ContextPreset[];
   jevSetupDeps?: JevSetupDeps;
-  onJevSetup?: (
-    selection: JevSetupSelection,
+  onJevFilter?: (
+    selection: JevFilterSelection,
+    settings: AdvisorSettings
+  ) => boolean;
+  onJevProvider?: (
+    selection: JevProviderSelection,
     settings: AdvisorSettings
   ) => boolean;
   theme: Theme;

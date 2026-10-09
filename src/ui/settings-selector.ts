@@ -17,7 +17,8 @@ import type {
   AdvisorSettings,
   AdvisorSettingsSelectorOptions,
   ContextPreset,
-  JevSetupSelection,
+  JevFilterSelection,
+  JevProviderSelection,
 } from "./types.ts";
 
 export class AdvisorSettingsSelector implements Component, Focusable {
@@ -121,7 +122,8 @@ export class AdvisorSettingsSelector implements Component, Focusable {
       fallbackModel,
       jevSetupDeps: this.options.jevSetupDeps,
       modelWhitelist,
-      onJevSetup: (selection) => this.applyJevSetup(selection),
+      onJevFilter: (selection) => this.applyJevFilter(selection),
+      onJevProvider: (selection) => this.applyJevProvider(selection),
       presets: this.presets,
       settings: this.settings,
       theme: this.options.theme,
@@ -142,17 +144,19 @@ export class AdvisorSettingsSelector implements Component, Focusable {
     return adapter;
   }
 
-  private applyJevSetup(selection: JevSetupSelection): boolean {
+  private applyJevSelection(
+    patch: Partial<AdvisorSettings>,
+    handler?: (settings: AdvisorSettings) => boolean
+  ): boolean {
     const updated: AdvisorSettings = {
       ...this.settings,
-      jevFilterEnabled: selection.enabled,
-      jevTransport: selection.transport,
+      ...patch,
       showUsageDetails: this.settings.showUsageDetails ?? true,
       toolPolicies: { ...this.settings.toolPolicies },
     };
     try {
-      const result = this.options.onJevSetup
-        ? this.options.onJevSetup(selection, updated)
+      const result = handler
+        ? handler(updated)
         : (this.options.onChange ?? this.options.onSave)?.(updated);
       if (result === false) {
         return false;
@@ -162,6 +166,33 @@ export class AdvisorSettingsSelector implements Component, Focusable {
     }
     Object.assign(this.settings, updated);
     return true;
+  }
+
+  private applyJevFilter(selection: JevFilterSelection): boolean {
+    return this.applyJevSelection(
+      { jevFilterEnabled: selection.enabled },
+      this.options.onJevFilter
+        ? (settings) =>
+            (this.options.onJevFilter ?? (() => true))(selection, settings)
+        : undefined
+    );
+  }
+
+  private applyJevProvider(selection: JevProviderSelection): boolean {
+    const custom = selection.transport === "typesafe-compatible";
+    return this.applyJevSelection(
+      {
+        jevBaseUrl: custom ? selection.baseUrl : this.settings.jevBaseUrl,
+        jevKeyProvider: custom
+          ? selection.keyProvider
+          : this.settings.jevKeyProvider,
+        jevTransport: selection.transport,
+      },
+      this.options.onJevProvider
+        ? (settings) =>
+            (this.options.onJevProvider ?? (() => true))(selection, settings)
+        : undefined
+    );
   }
 
   private startSimpleModeGradient(): void {

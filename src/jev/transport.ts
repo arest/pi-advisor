@@ -1,22 +1,36 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { advisorJevTransportRef } from "../config/state.ts";
+import {
+  advisorJevBaseUrlRef,
+  advisorJevKeyProviderRef,
+  advisorJevTransportRef,
+} from "../config/state.ts";
+import { normalizeJevBaseUrl } from "./base-url.ts";
+import { resolveJevEndpointKey } from "./endpoint-key-store.ts";
+import type { JevEndpointKeyResolution } from "./endpoint-key-store.ts";
 import { resolveTypeSafeKey } from "./key-store.ts";
 import type { JevKeySource } from "./key-store.ts";
 import { resolveOpenAIDecisionsKey } from "./openai-key-store.ts";
 import type { OpenAIDecisionsKeyResolution } from "./openai-key-store.ts";
 
-export type JevTransportKind = "typesafe" | "openrouter" | "openai-decisions";
+export type JevTransportKind =
+  | "typesafe"
+  | "openrouter"
+  | "openai-decisions"
+  | "typesafe-compatible";
 
 export type JevCredentialSource =
   | JevKeySource
   | "openai-env"
   | "openai-provider-credential"
   | "openai-bun-secrets"
-  | "openai-file";
+  | "openai-file"
+  | JevEndpointKeyResolution["source"]
+  | "provider-credential";
 
 export interface JevCredentials {
   apiKey: string;
+  baseUrl?: string;
   source?: JevCredentialSource;
   transport: JevTransportKind;
 }
@@ -35,6 +49,8 @@ export interface JevTransportDeps {
   ) => Promise<JevProviderAuthResult | undefined>;
   /** Resolves the extension-owned OpenAI Decisions key; injectable for tests. */
   resolveOpenAIKey?: () => Promise<OpenAIDecisionsKeyResolution>;
+  /** Resolves the extension-owned endpoint key; injectable for tests. */
+  resolveEndpointKey?: () => Promise<JevEndpointKeyResolution>;
   /** Resolves the TypeSafe key chain; injectable for tests. */
   resolveTypesafe?: () => ReturnType<typeof resolveTypeSafeKey>;
 }
@@ -112,6 +128,65 @@ const typeSafeCredentials = async (
   return credentials;
 };
 
+export const resolveTypesafeCompatibleCredentials = async (
+  options: { baseUrl: string; keyProvider?: string },
+  ctx?: ExtensionContext,
+  deps: JevTransportDeps = {}
+): Promise<JevCredentials | undefined> => {
+  const { baseUrl } = options;
+  const provider = options.keyProvider;
+  if (provider) {
+    let providerKey: string | undefined;
+    try {
+      providerKey = deps.getProviderKey
+        ? await deps.getProviderKey(provider)
+        : await ctx?.modelRegistry?.getApiKeyForProvider(provider);
+    } catch {
+      providerKey = undefined;
+    }
+    const trimmed = providerKey?.trim();
+    if (trimmed) {
+      return {
+        apiKey: trimmed,
+        baseUrl,
+        source: "provider-credential",
+        transport: "typesafe-compatible",
+      };
+    }
+  }
+  const resolution = await (deps.resolveEndpointKey ?? resolveJevEndpointKey)();
+  if (!resolution.key) {
+    return undefined;
+  }
+  const credentials: JevCredentials = {
+    apiKey: resolution.key,
+    baseUrl,
+    transport: "typesafe-compatible",
+  };
+  if (resolution.source) {
+    credentials.source = resolution.source;
+  }
+  return credentials;
+};
+
+const typeSafeCompatibleCredentials = (
+  ctx: ExtensionContext | undefined,
+  deps: JevTransportDeps
+): Promise<JevCredentials | undefined> => {
+  const configured = advisorJevBaseUrlRef;
+  if (!configured) {
+    return Promise.resolve(undefined);
+  }
+  const { baseUrl } = normalizeJevBaseUrl(configured);
+  if (!baseUrl) {
+    return Promise.resolve(undefined);
+  }
+  const options = advisorJevKeyProviderRef
+    ? { baseUrl, keyProvider: advisorJevKeyProviderRef }
+    : { baseUrl };
+  return resolveTypesafeCompatibleCredentials(options, ctx, deps);
+};
+
 export const resolveJevTransportFor = async (
   transport: JevTransportKind,
   ctx?: ExtensionContext,
@@ -120,6 +195,9 @@ export const resolveJevTransportFor = async (
   if (transport === "typesafe") {
     return typeSafeCredentials(deps);
   }
+  if (transport === "typesafe-compatible") {
+    return typeSafeCompatibleCredentials(ctx, deps);
+  }
   if (transport === "openrouter") {
     const key = await openRouterKey(ctx, deps);
     return key ? { apiKey: key, transport } : undefined;
@@ -127,7 +205,8 @@ export const resolveJevTransportFor = async (
   return openAiPlatformCredentials(ctx, deps);
 };
 
-/** Resolves `auto` as TypeSafe then OpenRouter; explicit choices never fall back. */
+/** Resolves `auto` as TypeSafe then OpenRouter; explicit choices never fall
+ * back, and the System One–compatible endpoint is never chosen implicitly. */
 export const resolveJevTransport = async (
   ctx?: ExtensionContext,
   deps: JevTransportDeps = {}
